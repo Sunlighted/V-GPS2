@@ -1,0 +1,24 @@
+agent: cql
+agent_kwargs:
+  cql_alpha: 5.0
+  discount: 0.98
+  early_goal_concat: null
+  gc_kwargs:
+    negative_proportion: 0.0
+  goal_conditioned: true
+  language_conditioned: true
+  policy_kwargs:
+    std_parameterization: exp
+    tanh_squash_distribution: true
+  shared_encoder: false
+  shared_goal_encoder: null
+  target_update_rate: 0.005
+  use_calql: true
+  use_proprio: false
+  warmup_steps: 2000
+encoder: resnetv1-34-bridge-film
+encoder_kwargs:
+  act: swish
+  add_spatial_coordinates: true
+  pooling_method: avg
+text_processor: muse_embedding
