@@ -179,7 +179,7 @@ def main(_):
             
             batch["goals"]["language"] = tiled_encoded
             print(f"Shape: {batch['goals']['language'].shape}")
-            assert 0
+            # assert 0
             
         return batch
 
@@ -318,19 +318,12 @@ def main(_):
 
     val_data_iter = map(shard_fn, map(process_oxe_traj_batch, val_data_iter))
     prev_val_traj = next(val_traj_data_iter)
-    
-    # 临时修改：去掉 shard_fn
-    train_data_iter = map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
 
-    # 尝试手动获取一次
+    train_data_iter = map(
+        shard_fn, map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
+    )
+
     example_batch = next(train_data_iter)
-    print("Got raw batch from CPU!") # 如果能打印出来，说明是 JAX Sharding 的问题
-
-    # train_data_iter = map(
-    #     shard_fn, map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
-    # )
-
-    # example_batch = next(train_data_iter)
     def debug_print_shapes(data, indent=0):
         for key, value in data.items():
             print("  " * indent + f"[{key}]:", end=" ")
@@ -348,7 +341,6 @@ def main(_):
     print("DEBUG: BATCH SHAPES")
     debug_print_shapes(example_batch)
     print("="*40 + "\n")
-    assert 0
     logging.info(f"Batch size: {example_batch['observations']['image'].shape[0]}")
     logging.info(f"Trajectory length: {example_batch['observations']['image'].shape[1]}")
     logging.info(f"Number of devices: {num_devices}")

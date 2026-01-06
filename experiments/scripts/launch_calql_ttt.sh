@@ -11,7 +11,7 @@ NAME=VGPS_CalQL_${data_mix}_b${batch_size}_ttt
 
 python experiments/train_ttt_e2e.py \
     --config experiments/configs/train_config_ttte2e.py:lc_cqlttt \
-    --oxedata_config experiments/configs/data_config.py \
+    --oxedata_config experiments/configs/data_config_ttte2e.py \
     --name $NAME \
     --project $PROJECT \
     --config.num_steps 500000 \
