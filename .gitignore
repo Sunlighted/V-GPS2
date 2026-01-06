@@ -181,5 +181,5 @@ logs/
 checkpoints/
 logs_dataset_eval/
 save/
-data/
+# data/
 sim_data/
