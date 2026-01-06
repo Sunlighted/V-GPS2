@@ -640,7 +640,7 @@ class ContinuousCQLTTTAgent(SACAgent):
         batch: Batch,
         *,
         pmap_axis: str = None,
-        networks_to_update: frozenset[str] = frozenset(
+        networks_to_update: set[str] = set(
             {"actor", "critic"}
         ),
     ) -> Tuple["ContinuousCQLTTTAgent", dict]:
@@ -1360,9 +1360,9 @@ class ContinuousCQLTTTAgent(SACAgent):
             
         print("Encoder def:", encoder_def)
 
-        state_encoder = partial(MLP, **state_encoder_kwargs)
-        action_encoder = partial(MLP, **action_encoder_kwargs)
-        sa_encoder = partial(MLP, **state_action_encoder_kwargs)
+        state_encoder = lambda *args, **kwargs: MLP(**state_encoder_kwargs)(*args, **kwargs)
+        action_encoder = lambda *args, **kwargs: MLP(**action_encoder_kwargs)(*args, **kwargs)
+        sa_encoder = lambda *args, **kwargs: MLP(**state_action_encoder_kwargs)(*args, **kwargs)
 
         # Define networks
         policy_def = Policy(
@@ -1376,9 +1376,9 @@ class ContinuousCQLTTTAgent(SACAgent):
         critic_backbone = ensemblize(critic_backbone, config.critic_ensemble_size)(
             name="critic_ensemble"
         )
-        dynamics_backbone = partial(MLP, **dynamics_network_kwargs)
+        dynamics_backbone = lambda *args, **kwargs: MLP(**dynamics_network_kwargs)(*args, **kwargs)
         critic_def = partial(
-            Critic_sa_encoder, encoder=encoders["critic"], state_encoder=state_encoder, action_encoder=action_encoder,
+            Critic_sa_encoder, encoder=encoders["critic"], s_encoder=state_encoder, a_encoder=action_encoder,
             sa_encoder=sa_encoder, network=critic_backbone, dynamics_network=dynamics_backbone
         )(name="critic")
         temperature_def = GeqLagrangeMultiplier(

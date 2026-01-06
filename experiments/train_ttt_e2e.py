@@ -89,9 +89,24 @@ def main(_):
 
     def process_text(batch):
         if text_processor is not None:
-            batch["goals"]["language"] = text_processor.encode(
-                [s.decode("utf-8") for s in batch["goals"]["language"]]
-            )
+            print("--- DEBUG TEXT PROCESSOR ---")
+            print(f"Type: {type(batch['goals']['language'])}")
+            # 如果是 numpy 数组，看它的 shape
+            if hasattr(batch['goals']['language'], 'shape'):
+                print(f"Shape: {batch['goals']['language'].shape}")
+            # 看看第一个元素到底是什么
+            first_elem = batch['goals']['language'][0]
+            print(f"First element type: {type(first_elem)}")
+            print(f"First element value: {first_elem}")
+            
+            # 鲁棒性修复：先展平，再判断是否有 decode 方法
+            raw_list = np.array(batch["goals"]["language"]).flatten()
+            processed = [
+                s.decode("utf-8") if hasattr(s, "decode") else str(s)
+                for s in raw_list
+            ]
+            
+            batch["goals"]["language"] = text_processor.encode(processed)
         return batch
 
     def process_oxe_batch(batch):
@@ -235,6 +250,24 @@ def main(_):
     )
 
     example_batch = next(train_data_iter)
+    def debug_print_shapes(data, indent=0):
+        for key, value in data.items():
+            print("  " * indent + f"[{key}]:", end=" ")
+            if isinstance(value, dict):
+                print() # 换行处理子字典
+                debug_print_shapes(value, indent + 1)
+            elif hasattr(value, "shape"):
+                # 打印形状和类型（方便区分是 CPU 的 NumPy 还是 TPU 的 DeviceArray）
+                print(f"{value.shape}  ({type(value).__name__})")
+            else:
+                print(f"{type(value)}")
+
+    # 运行调试
+    print("\n" + "="*40)
+    print("DEBUG: BATCH SHAPES")
+    debug_print_shapes(example_batch)
+    print("="*40 + "\n")
+    assert 0
     logging.info(f"Batch size: {example_batch['observations']['image'].shape[0]}")
     logging.info(f"Trajectory length: {example_batch['observations']['image'].shape[1]}")
     logging.info(f"Number of devices: {num_devices}")

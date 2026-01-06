@@ -43,6 +43,26 @@ def get_config(config_string):
                         activate_final = True,
                         use_layer_norm = False,
                     ),
+                    state_encoder_kwargs = dict(
+                        hidden_dims = [512],
+                        activate_final = True,
+                        use_layer_norm = True,
+                    ),
+                    action_encoder_kwargs = dict(
+                        hidden_dims = [256],
+                        activate_final = True,
+                        use_layer_norm = False,
+                    ),
+                    state_action_encoder_kwargs = dict(
+                        hidden_dims = [512, 512, 512],
+                        activate_final = False,
+                        use_layer_norm = True,
+                    ),
+                    dynamics_network_kwargs = dict(
+                        hidden_dims = [512],
+                        activate_final = True,
+                        use_layer_norm = True,
+                    ),
                     policy_kwargs = dict(
                         tanh_squash_distribution=True,
                         std_parameterization="exp",
