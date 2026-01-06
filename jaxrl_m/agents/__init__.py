@@ -4,6 +4,7 @@ from .continuous.cql import ContinuousCQLAgent
 from .continuous.cqlfix import EmbeddingCQLAgent
 from .continuous.cql_simsiam import CQLSimSiamAgent
 from .continuous.cql_ttt_predict import CQLTTTPredictAgent
+from .continuous.cql_ttt_e2e import ContinuousCQLTTTAgent
 from .continuous.gc_bc import GCBCAgent
 from .continuous.gc_ddpm_bc import GCDDPMBCAgent
 from .continuous.gc_iql import GCIQLAgent
@@ -22,4 +23,5 @@ agents = {
     "sac": SACAgent,
     "cql_simsiam": CQLSimSiamAgent,
     "cql_ttt": CQLTTTPredictAgent,
+    "cql_ttt_e2e": ContinuousCQLTTTAgent,
 }

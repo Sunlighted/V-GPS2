@@ -13,7 +13,7 @@ import orbax.checkpoint
 import tensorflow as tf
 import tqdm
 
-from octo.data.dataset import make_single_dataset
+from octo.data.dataset import make_single_dataset, make_single_traj_dataset
 from octo.data.utils.text_processing import TextProcessor
 from octo.utils.train_utils import batched_apply, TrainState
 from octo.utils.typing import Any, Data, Sequence
@@ -37,6 +37,35 @@ def create_validation_dataset(
     options to ensure stable memory consumption.
     """
     return make_single_dataset(
+        dataset_kwargs={
+            **dataset_kwargs,
+            "num_parallel_reads": 4,
+            "num_parallel_calls": 4,
+            "shuffle": False,
+        },
+        traj_transform_kwargs={
+            **traj_transform_kwargs,
+            "num_parallel_calls": 4,
+        },
+        frame_transform_kwargs={
+            **frame_transform_kwargs,
+            "num_parallel_calls": 16,
+        },
+        train=train,
+    )
+
+def create_validation_traj_dataset(
+    dataset_kwargs: dict,
+    traj_transform_kwargs: dict,
+    frame_transform_kwargs: dict,
+    train: bool = False,
+):
+    """Creates a dataset for validation and visualization purposes.
+
+    Takes the training configuration and overwrites default parameters with more conservative
+    options to ensure stable memory consumption.
+    """
+    return make_single_traj_dataset(
         dataset_kwargs={
             **dataset_kwargs,
             "num_parallel_reads": 4,

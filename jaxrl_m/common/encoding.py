@@ -46,6 +46,29 @@ class EncodingWrapper(nn.Module):
             encoding = jax.lax.stop_gradient(encoding)
         return encoding
 
+class VectorEncodingWrapper(nn.Module):
+    """
+    Encodes actions into a single flat encoding, adding additional
+    functionality for adding proprioception and stopping the gradient.
+
+    Args:
+        encoder: The encoder network.
+        use_proprio: Whether to concatenate proprioception (after encoding).
+        stop_gradient: Whether to stop the gradient after the encoder.
+    """
+
+    encoder: nn.Module
+    stop_gradient: bool
+    enable_stacking: bool = False
+
+    def __call__(self, inputs: jnp.ndarray) -> jnp.ndarray:
+
+        encoding = self.encoder(inputs)
+
+        if self.stop_gradient:
+            encoding = jax.lax.stop_gradient(encoding)
+
+        return encoding
 
 class GCEncodingWrapper(nn.Module):
     """

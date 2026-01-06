@@ -58,6 +58,152 @@ class Critic(nn.Module):
         else:
             value = nn.Dense(1, kernel_init=default_init())(outputs)
         return jnp.squeeze(value, -1)
+    
+class Critic_sa_encoder(nn.Module):
+    encoder: Optional[nn.Module]
+    s_encoder: Optional[nn.Module]
+    a_encoder: Optional[nn.Module]
+    sa_encoder: Optional[nn.Module]
+    network: nn.Module
+    dynamics_network: nn.Module
+    init_final: Optional[float] = None
+
+    @nn.compact
+    def __call__(
+        self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False, mode: str = "critic"
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+            
+        if isinstance(obs_enc, dict):
+            obs_enc_values = list(obs_enc.values())
+            if len(obs_enc_values) == 1:
+                obs_enc = obs_enc_values[0]
+            else:
+                obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
+                
+        if self.s_encoder is not None:
+            obs_enc = self.s_encoder(obs_enc)
+        else:
+            obs_enc = obs_enc
+
+        if self.a_encoder is not None:
+            action_enc = self.a_encoder(actions)
+        else:
+            action_enc = actions
+
+        sa_enc = jnp.concatenate([obs_enc, action_enc], -1)
+        
+        if self.sa_encoder is not None:
+            inputs = self.sa_encoder(sa_enc)
+        else:
+            inputs = sa_enc
+            
+        critic_out = self.network(inputs, train=train)
+        dyn_out = self.dynamics_network(inputs, train=train)
+            
+        if mode == 'critic':
+            if self.init_final is not None:
+                value = nn.Dense(
+                    1,
+                    kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
+                )(critic_out)
+            else:
+                value = nn.Dense(1, kernel_init=default_init())(critic_out)
+            return jnp.squeeze(value, -1)
+        elif mode == 'dynamics':
+            return dyn_out
+        
+    def compute_target(
+        self, next_observations: jnp.ndarray
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = next_observations
+        else:
+            obs_enc = self.encoder(next_observations)
+            
+        if isinstance(obs_enc, dict):
+            obs_enc_values = list(obs_enc.values())
+            if len(obs_enc_values) == 1:
+                obs_enc = obs_enc_values[0]
+            else:
+                obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
+                
+        if self.s_encoder is not None:
+            obs_enc = self.s_encoder(obs_enc)
+        else:
+            obs_enc = obs_enc
+            
+        return obs_enc
+
+class Dynamics_sa_encoder(nn.Module):
+    encoder: Optional[nn.Module]
+    s_encoder: Optional[nn.Module]
+    a_encoder: Optional[nn.Module]
+    sa_encoder: Optional[nn.Module]
+    network: nn.Module
+    init_final: Optional[float] = None
+
+    @nn.compact
+    def __call__(
+        self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+            
+        if isinstance(obs_enc, dict):
+            obs_enc_values = list(obs_enc.values())
+            if len(obs_enc_values) == 1:
+                obs_enc = obs_enc_values[0]
+            else:
+                obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
+                
+        if self.s_encoder is not None:
+            obs_enc = self.s_encoder(obs_enc)
+        else:
+            obs_enc = obs_enc
+
+        if self.a_encoder is not None:
+            action_enc = self.a_encoder(actions)
+        else:
+            action_enc = actions
+
+        sa_enc = jnp.concatenate([obs_enc, action_enc], -1)
+        
+        if self.sa_encoder is not None:
+            inputs = self.sa_encoder(sa_enc)
+        else:
+            inputs = sa_enc
+            
+        outputs = self.network(inputs, train=train)
+
+        return outputs
+    
+    def compute_target(
+        self, next_observations: jnp.ndarray
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = next_observations
+        else:
+            obs_enc = self.encoder(next_observations)
+            
+        if isinstance(obs_enc, dict):
+            obs_enc_values = list(obs_enc.values())
+            if len(obs_enc_values) == 1:
+                obs_enc = obs_enc_values[0]
+            else:
+                obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
+                
+        if self.s_encoder is not None:
+            obs_enc = self.s_encoder(obs_enc)
+        else:
+            obs_enc = obs_enc
+            
+        return obs_enc
 
 class Critic_no_action(nn.Module):
     encoder: Optional[nn.Module]
