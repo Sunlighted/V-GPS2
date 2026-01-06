@@ -182,4 +182,5 @@ checkpoints/
 logs_dataset_eval/
 save/
 # data/
+ManiSkill2_real2sim/data/
 sim_data/
