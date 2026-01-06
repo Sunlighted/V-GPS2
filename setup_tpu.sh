@@ -31,8 +31,8 @@
 
 # echo "=== Cloning V-GPS repo with submodules ==="
 # cd ~
-# # git clone https://github.com/nakamotoo/V-GPS --recurse-submodules
-# # cd V-GPS
+# git clone https://github.com/nakamotoo/V-GPS --recurse-submodules
+# cd V-GPS
 
 echo "=== Installing packages ==="
 conda install -c conda-forge libgl

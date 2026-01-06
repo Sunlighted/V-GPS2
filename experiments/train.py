@@ -89,9 +89,19 @@ def main(_):
 
     def process_text(batch):
         if text_processor is not None:
+            print("--- DEBUG TEXT PROCESSOR ---")
+            print(f"Type: {type(batch['goals']['language'])}")
+            # 如果是 numpy 数组，看它的 shape
+            if hasattr(batch['goals']['language'], 'shape'):
+                print(f"Shape: {batch['goals']['language'].shape}")
+            # 看看第一个元素到底是什么
+            first_elem = batch['goals']['language'][0]
+            print(f"First element type: {type(first_elem)}")
+            print(f"First element value: {first_elem}")
             batch["goals"]["language"] = text_processor.encode(
                 [s.decode("utf-8") for s in batch["goals"]["language"]]
             )
+            print(f"Shape: {batch['goals']['language'].shape}")
         return batch
 
     def process_oxe_batch(batch):
@@ -212,6 +222,13 @@ def main(_):
     )
 
     example_batch = next(train_data_iter)
+    print("-" * 30)
+    print(f"DEBUG: Batch Size is {FLAGS.oxedata_config.batch_size}")
+    print(f"Observation Image Shape: {example_batch['observations']['image'].shape}")
+    print(f"Action Shape:            {example_batch['actions'].shape}")
+    print(f"Language Shape:          {example_batch['goals']['language'].shape}")
+    print("-" * 30)
+    assert 0
     logging.info(f"Batch size: {example_batch['observations']['image'].shape[0]}")
     logging.info(f"Number of devices: {num_devices}")
     logging.info(

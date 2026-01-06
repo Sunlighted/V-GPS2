@@ -88,6 +88,28 @@ def main(_):
         )
 
     def process_text(batch):
+        print("\n" + "="*30)
+        print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
+        
+        # 定义要检查的键
+        check_keys = [
+            ('actions', batch['actions']),
+            ('mc_returns', batch['mc_returns']),
+            ('rewards', batch['rewards']),
+            ('masks', batch['masks']),
+            ('observations_image', batch['observations']['image']),
+            ('next_observations_image', batch['next_observations']['image']),
+            ('language_raw', batch['goals']['language'])
+        ]
+
+        for name, val in check_keys:
+            if hasattr(val, 'shape'):
+                print(f"{name: <25} shape: {val.shape}")
+            else:
+                print(f"{name: <25} type: {type(val)}")
+        
+        print("="*30 + "\n")
+        # === 安全 Debug 打印结束 ===
         if text_processor is not None:
             print("--- DEBUG TEXT PROCESSOR ---")
             print(f"Type: {type(batch['goals']['language'])}")
@@ -99,14 +121,66 @@ def main(_):
             print(f"First element type: {type(first_elem)}")
             print(f"First element value: {first_elem}")
             
-            # 鲁棒性修复：先展平，再判断是否有 decode 方法
-            raw_list = np.array(batch["goals"]["language"]).flatten()
-            processed = [
-                s.decode("utf-8") if hasattr(s, "decode") else str(s)
-                for s in raw_list
-            ]
+            batch["goals"]["language"] = text_processor.encode(
+                [s.decode("utf-8") for s in batch["goals"]["language"]]
+            )
+        return batch
+    
+    def process_traj_text(batch):
+        print("\n" + "="*30)
+        print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
+        
+        # 定义要检查的键
+        check_keys = [
+            ('actions', batch['actions']),
+            ('mc_returns', batch['mc_returns']),
+            ('rewards', batch['rewards']),
+            ('masks', batch['masks']),
+            ('pad_masks', batch['pad_masks']),
+            ('observations_image', batch['observations']['image']),
+            ('next_observations_image', batch['next_observations']['image']),
+            ('language_raw', batch['goals']['language'])
+        ]
+
+        for name, val in check_keys:
+            if hasattr(val, 'shape'):
+                print(f"{name: <25} shape: {val.shape}")
+            else:
+                print(f"{name: <25} type: {type(val)}")
+        
+        print("="*30 + "\n")
+        # === 安全 Debug 打印结束 ===
+        if text_processor is not None:
+            # 当前 batch["goals"]["language"] 形状是 (4, 120)
+            raw_lang = batch["goals"]["language"]
             
-            batch["goals"]["language"] = text_processor.encode(processed)
+            # 1. 只取每一条轨迹的第一帧 (Shape: 4,)
+            # 这样做是因为 120 帧里的指令是重复的
+            unique_instructions = raw_lang[:, 0] 
+            
+            # 2. 转换 bytes 为字符串 (仅对 4 个元素操作)
+            def decode_if_needed(s):
+                if hasattr(s, "decode"):
+                    return s.decode("utf-8")
+                return str(s)
+                
+            decoded_list = [decode_if_needed(s) for s in unique_instructions]
+            
+            # 3. 进行编码 (结果 Shape 可能是 (4, Dim) 或 (4, Seq, Dim))
+            encoded = text_processor.encode(decoded_list)
+            
+            # 4. 将编码后的向量广播回 (4, 120, ...)
+            # 假设 encoded 形状是 (4, 512) -> 变为 (4, 1, 512) -> 变为 (4, 120, 512)
+            # 这样能完美对齐你的 Observation (4, 120, 256, 256, 3)
+            # expanded = np.expand_dims(encoded, axis=1) # 插入 Time 维度
+            # tiled_encoded = np.tile(expanded, (1, 120, 1)) 
+            expanded = np.expand_dims(encoded, axis=1).astype(np.float32) 
+            tiled_encoded = np.broadcast_to(expanded, (expanded.shape[0], 120, *expanded.shape[2:]))
+            
+            batch["goals"]["language"] = tiled_encoded
+            print(f"Shape: {batch['goals']['language'].shape}")
+            assert 0
+            
         return batch
 
     def process_oxe_batch(batch):
@@ -129,7 +203,7 @@ def main(_):
         """
         Process a batch from the oxe dataset to be compatible with jaxrl_minimal
         """
-        return process_text(
+        return process_traj_text(
             dict(
                 actions=batch["action"].squeeze(),
                 goals=dict(language=batch["task"]["language_instruction"]),
@@ -244,12 +318,19 @@ def main(_):
 
     val_data_iter = map(shard_fn, map(process_oxe_traj_batch, val_data_iter))
     prev_val_traj = next(val_traj_data_iter)
+    
+    # 临时修改：去掉 shard_fn
+    train_data_iter = map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
 
-    train_data_iter = map(
-        shard_fn, map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
-    )
-
+    # 尝试手动获取一次
     example_batch = next(train_data_iter)
+    print("Got raw batch from CPU!") # 如果能打印出来，说明是 JAX Sharding 的问题
+
+    # train_data_iter = map(
+    #     shard_fn, map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
+    # )
+
+    # example_batch = next(train_data_iter)
     def debug_print_shapes(data, indent=0):
         for key, value in data.items():
             print("  " * indent + f"[{key}]:", end=" ")
