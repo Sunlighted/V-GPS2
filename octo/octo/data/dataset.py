@@ -637,41 +637,37 @@ def make_interleaved_dataset(
 
 def pad_trajectory_to_max(traj: dict, max_T: int = 120) -> dict:
     """
-    将轨迹补齐到固定长度 max_T，并添加 pad_mask。
+    递归补齐轨迹到固定长度 max_T。
     """
-    # 1. 获取当前轨迹的实际长度
+    # 1. 以 action 的第 0 维作为当前的实际长度基准
     current_len = tf.shape(traj["action"])[0]
     padd_len = max_T - current_len
 
-    # 2. 创建掩码: 1 表示真实数据, 0 表示填充数据
-    # 注意：你原本代码里有一个 add_pad_mask_dict，那里可能已经有了一个 mask，
-    # 但我们这里需要一个针对时间步的全局 mask。
+    # 2. 定义统一的补齐逻辑
+    def pad_tensor(x):
+        if not isinstance(x, tf.Tensor):
+            return x
+        
+        # 只有第一维长度等于 current_len 的才需要补齐
+        # 这样可以自动跳过那些已经是 [window_size, ...] 的非时间维度的 tensor
+        s = tf.shape(x)
+        if s.shape[0] >= 1 and s[0] == current_len:
+            last_step = x[-1:]  # 保持最后一步的维度
+            padding = tf.repeat(last_step, padd_len, axis=0)
+            return tf.concat([x, padding], axis=0)
+        return x
+
+    # 3. 使用 nest.map_structure 递归处理所有嵌套字典
+    # 这会覆盖：observation, next_observation, task, 以及 top-level 的 reward, masks 等
+    new_traj = tf.nest.map_structure(pad_tensor, traj)
+
+    # 4. 重新计算或补齐 pad_mask
     pad_mask = tf.concat([
         tf.ones((current_len,), dtype=tf.bool),
         tf.zeros((padd_len,), dtype=tf.bool)
     ], axis=0)
-
-    # 3. 定义填充逻辑：重复最后一帧
-    def pad_tensor(x):
-        last_step = x[-1:]  # 保持维度 (1, ...)
-        padding = tf.repeat(last_step, padd_len, axis=0)
-        return tf.concat([x, padding], axis=0)
-
-    # 4. 对所有字段应用填充 (处理嵌套字典)
-    new_traj = {}
-    for key, value in traj.items():
-        if key == "observation":
-            new_traj[key] = tf.nest.map_structure(pad_tensor, value)
-        elif key == "task":
-            # task 通常是字符串指令，不需要在时间轴上 pad，
-            # 但如果它已经是 traj_len 长度，也需要处理
-            new_traj[key] = value 
-        elif isinstance(value, tf.Tensor) and tf.shape(value)[0] == current_len:
-            new_traj[key] = pad_tensor(value)
-        else:
-            new_traj[key] = value
-
     new_traj["pad_mask"] = pad_mask
+
     return new_traj
 
 def make_single_traj_dataset(
