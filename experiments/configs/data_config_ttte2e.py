@@ -118,7 +118,7 @@ def get_config():
             image_dropout_prob=0.0,
         ),
         batch_size=512,
-        shuffle_buffer_size=200,
+        shuffle_buffer_size=400,
         balance_weights=True,
     )
 

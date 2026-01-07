@@ -26,6 +26,27 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
+def swish_grad(x, upstream_grad):
+    sig_x = jax.nn.sigmoid(x)
+    return upstream_grad * (sig_x + (x * sig_x) * (1.0 - sig_x))
+
+def layernorm_grad(x, scale, bias, upstream_grad, eps=1e-5):
+    N = x.shape[-1]
+    mean = jnp.mean(x, axis=-1, keepdims=True)
+    var = jnp.var(x, axis=-1, keepdims=True)
+    std = jnp.sqrt(var + eps)
+    x_hat = (x - mean) / std
+    
+    grad_scale = jnp.sum(upstream_grad * x_hat, axis=0)
+    grad_bias = jnp.sum(upstream_grad, axis=0)
+    
+    dx_hat = upstream_grad * scale
+    grad_x = (1.0 / (N * std)) * (
+        N * dx_hat - jnp.sum(dx_hat, axis=-1, keepdims=True) - 
+        x_hat * jnp.sum(dx_hat * x_hat, axis=-1, keepdims=True)
+    )
+    return grad_scale, grad_bias, grad_x
+
 class ContinuousCQLTTTAgent(SACAgent):
     def _sample_negative_goals(self, batch, rng):
         """
@@ -113,15 +134,111 @@ class ContinuousCQLTTTAgent(SACAgent):
     ) -> jnp.ndarray:
         """
         Forward pass for dynamics network to predict next state embedding.
+        Supports both single action and multiple sampled actions.
         """
-        return self.state.apply_fn(
-            {"params": grad_params or self.state.params},
-            observations,
-            actions,
-            name="critic",
-            train=train,
-            mode="dynamics"
-        )
+        if jnp.ndim(actions) == 4:
+            return jax.vmap(
+                lambda a: self.state.apply_fn(
+                    {"params": grad_params or self.state.params},
+                    observations,
+                    a,
+                    name="critic", 
+                    train=train,
+                    mode="dynamics_embedding"
+                ),
+                in_axes=2,
+                out_axes=2,
+            )(actions)
+        else:
+            return self.state.apply_fn(
+                {"params": grad_params or self.state.params},
+                observations,
+                actions,
+                name="critic",
+                train=train,
+                mode="dynamics_embedding"
+            )
+    
+    @overrides
+    def forward_critic(
+        self,
+        observations: Union[Data, Tuple[Data, Data]],
+        actions: jax.Array,
+        rng: PRNGKey,
+        *,
+        grad_params: Optional[Params] = None,
+        train: bool = True,
+    ) -> jax.Array:
+        """
+        Forward pass for critic network.
+        Pass grad_params to use non-default parameters (e.g. for gradients).
+        """
+        if train:
+            assert rng is not None, "Must specify rng when training"
+        if jnp.ndim(actions) == 4:
+            # forward the q function with multiple actions on each state
+            return jax.vmap(
+                lambda a: self.state.apply_fn(
+                    {"params": grad_params or self.state.params},
+                    observations,
+                    a,
+                    name="critic",
+                    rngs={"dropout": rng} if train else {},
+                    train=train,
+                ),
+                in_axes=2,
+                out_axes=-1,
+            )(actions)
+        else:
+            # forward the q function on 1 action on each state
+            return self.state.apply_fn(
+                {"params": grad_params or self.state.params},
+                observations,
+                actions,
+                name="critic",
+                rngs={"dropout": rng} if train else {},
+                train=train,
+            )
+            
+    def forward_single_critic(
+        self,
+        observations: Union[Data, Tuple[Data, Data]],
+        actions: jax.Array,
+        rng: PRNGKey,
+        *,
+        grad_params: Optional[Params] = None,
+        train: bool = True,
+    ) -> jax.Array:
+        """
+        Forward pass for critic network.
+        Pass grad_params to use non-default parameters (e.g. for gradients).
+        """
+        if train:
+            assert rng is not None, "Must specify rng when training"
+        if jnp.ndim(actions) == 2:
+            # forward the q function with multiple actions on each state
+            return jax.vmap(
+                lambda a: self.state.apply_fn(
+                    {"params": grad_params or self.state.params},
+                    observations,
+                    a,
+                    name="critic",
+                    rngs={"dropout": rng} if train else {},
+                    train=train,
+                ),
+                in_axes=0,
+                out_axes=-1,
+            )(actions)
+        else:
+            # forward the q function on 1 action on each state
+            return self.state.apply_fn(
+                {"params": grad_params or self.state.params},
+                observations,
+                actions,
+                name="critic",
+                rngs={"dropout": rng} if train else {},
+                train=train,
+            )
 
     def get_dynamics_target(
         self,
@@ -354,7 +471,7 @@ class ContinuousCQLTTTAgent(SACAgent):
             train=True
         ) 
 
-        action_dim = self.config["action_dim"] 
+        action_dim = action.shape[-1]
         rng, action_rng = jax.random.split(rng)
         num_samples = self.config["cql_n_actions"]
 
@@ -379,7 +496,7 @@ class ContinuousCQLTTTAgent(SACAgent):
 
         rng, q_rng = jax.random.split(rng)
         
-        cql_q_samples = self.forward_critic(
+        cql_q_samples = self.forward_single_critic(
             obs, 
             all_sampled_actions, 
             q_rng, 
@@ -442,27 +559,99 @@ class ContinuousCQLTTTAgent(SACAgent):
 
         target_zs = self.get_dynamics_target(next_obs, grad_params=global_params)
         target_zs = jax.lax.stop_gradient(target_zs)
-
-        def dynamics_loss_fn(p_sa):
-            t_params = global_params.copy({
-                'critic': global_params['critic'].copy({'sa_encoder': p_sa})
-            })
-            next_zs_pred = self.forward_dynamics(obs, action, grad_params=t_params, train=True)
-            return jnp.mean(jnp.square(next_zs_pred - target_zs)) * pad_mask
         
-        step_dyn_loss = dynamics_loss_fn(current_sa_params)
+        sa_enc = self.forward_dynamics(obs, action, grad_params=global_params)
+        sa_enc = jax.lax.stop_gradient(sa_enc)
+        
+        p_ttt = current_sa_params
+        p_dyn = global_params['modules_critic']['dynamics_network_def']
+        
+        eps = 1e-6 # 建议与 Flax 默认对齐
 
-        inner_grads = jax.grad(dynamics_loss_fn)(current_sa_params)
+        # --- [Step 1: Forward Pass] ---
+        # TTT Part (L0, L1, L2)
+        def layer_fwd(x, dense_p, ln_p, apply_act=True):
+            z = jnp.dot(x, dense_p['kernel']) + dense_p['bias']
+            mean = jnp.mean(z, axis=-1, keepdims=True)
+            var = jnp.var(z, axis=-1, keepdims=True)
+            ln_out = (z - mean) / jnp.sqrt(var + eps) * ln_p['scale'] + ln_p['bias']
+            return (jax.nn.swish(ln_out) if apply_act else ln_out), z, ln_out
+
+        a_t0, z_t0, ln_t0 = layer_fwd(sa_enc, p_ttt['Dense_0'], p_ttt['LayerNorm_0'])
+        a_t1, z_t1, ln_t1 = layer_fwd(a_t0, p_ttt['Dense_1'], p_ttt['LayerNorm_1'])
+        # L2 无 LN 和 Swish
+        ttt_out = jnp.dot(a_t1, p_ttt['Dense_2']['kernel']) + p_ttt['Dense_2']['bias']
+
+        # Dynamics Part (根据你定义的 activate_final=True 和 LN)
+        # 假设 Dynamics Head 是 Dense -> LN -> Swish
+        z_d0 = jnp.dot(ttt_out, p_dyn['Dense_0']['kernel']) + p_dyn['Dense_0']['bias']
+        mean_d = jnp.mean(z_d0, axis=-1, keepdims=True)
+        var_d = jnp.var(z_d0, axis=-1, keepdims=True)
+        ln_d0 = (z_d0 - mean_d) / jnp.sqrt(var_d + eps) * p_dyn['LayerNorm_0']['scale'] + p_dyn['LayerNorm_0']['bias']
+        next_s_pred = jax.nn.swish(ln_d0)
+
+        # --- [Step 2: Backward Pass] ---
+        # 初始梯度: dL/d(next_s_pred)
+        # 如果是 MSE 且用 mean，系数是 2/dim
+        dim_z = next_s_pred.shape[-1]
+        g_up = (2.0 / dim_z) * (next_s_pred - target_zs) * pad_mask
+        step_dyn_loss = jnp.mean(jnp.square(next_s_pred - target_zs)) * pad_mask
+
+        # Bwd Dynamics Head (Swish -> LN -> Dense)
+        g_up = swish_grad(ln_d0, g_up)
+        _, _, g_up = layernorm_grad(z_d0, p_dyn['LayerNorm_0']['scale'], p_dyn['LayerNorm_0']['bias'], g_up)
+        g_up = jnp.dot(g_up, p_dyn['Dense_0']['kernel'].T) # 此时 g_up 形状变为 (512,)
+
+        # Bwd TTT L2 (Dense)
+        g_w2 = jnp.outer(a_t1, g_up)
+        g_b2 = g_up
+        g_up = jnp.dot(g_up, p_ttt['Dense_2']['kernel'].T)
+
+        # Bwd TTT L1 (Swish -> LN -> Dense)
+        g_up = swish_grad(ln_t1, g_up)
+        g_s1, g_beta1, g_up = layernorm_grad(z_t1, p_ttt['LayerNorm_1']['scale'], p_ttt['LayerNorm_1']['bias'], g_up)
+        g_w1 = jnp.outer(a_t0, g_up)
+        g_b1 = g_up
+        g_up = jnp.dot(g_up, p_ttt['Dense_1']['kernel'].T)
+
+        # Bwd TTT L0 (Swish -> LN -> Dense)
+        g_up = swish_grad(ln_t0, g_up)
+        g_s0, g_beta0, g_up = layernorm_grad(z_t0, p_ttt['LayerNorm_0']['scale'], p_ttt['LayerNorm_0']['bias'], g_up)
+        g_w0 = jnp.outer(sa_enc, g_up)
+        g_b0 = g_up
+        
         inner_lr = self.config.get("dynamics_inner_lr", 1e-3)
         
-        updated_sa_params = jax.tree_util.tree_map(
-            lambda p, g: p - inner_lr * g, 
-            current_sa_params, 
-            inner_grads
-        )
+        new_p_ttt = {
+            'Dense_0': {'kernel': p_ttt['Dense_0']['kernel'] - inner_lr * g_w0, 'bias': p_ttt['Dense_0']['bias'] - inner_lr * g_b0},
+            'Dense_1': {'kernel': p_ttt['Dense_1']['kernel'] - inner_lr * g_w1, 'bias': p_ttt['Dense_1']['bias'] - inner_lr * g_b1},
+            'Dense_2': {'kernel': p_ttt['Dense_2']['kernel'] - inner_lr * g_w2, 'bias': p_ttt['Dense_2']['bias'] - inner_lr * g_b2},
+            'LayerNorm_0': {'scale': p_ttt['LayerNorm_0']['scale'] - inner_lr * g_s0, 'bias': p_ttt['LayerNorm_0']['bias'] - inner_lr * g_beta0},
+            'LayerNorm_1': {'scale': p_ttt['LayerNorm_1']['scale'] - inner_lr * g_s1, 'bias': p_ttt['LayerNorm_1']['bias'] - inner_lr * g_beta1},
+        }
+        
+        updated_sa_params = jax.lax.stop_gradient(current_sa_params.copy({'params': new_p_ttt}))
+
+        # def dynamics_loss_fn(p_sa):
+        #     t_params = global_params.copy({
+        #         'modules_critic': global_params['modules_critic'].copy({'sa_encoder_def': p_sa})
+        #     })
+        #     next_zs_pred = self.forward_dynamics(obs, action, grad_params=t_params, train=True)
+        #     return jnp.mean(jnp.square(next_zs_pred - target_zs)) * pad_mask
+        
+        # step_dyn_loss = dynamics_loss_fn(current_sa_params)
+
+        # inner_grads = jax.grad(dynamics_loss_fn)(current_sa_params)
+        # inner_lr = self.config.get("dynamics_inner_lr", 1e-3)
+        
+        # updated_sa_params = jax.tree_util.tree_map(
+        #     lambda p, g: p - inner_lr * g, 
+        #     current_sa_params, 
+        #     inner_grads
+        # )
 
         adapted_params = global_params.copy({
-            'critic': global_params['critic'].copy({'sa_encoder': updated_sa_params})
+            'modules_critic': global_params['modules_critic'].copy({'sa_encoder_def': updated_sa_params})
         })
 
         current_q = self.forward_critic(
@@ -488,16 +677,20 @@ class ContinuousCQLTTTAgent(SACAgent):
     @overrides
     def critic_loss_fn(self, batch, params: Params, rng: PRNGKey, train=True):
         """add CQL loss on top of SAC loss"""
-        next_obs = batch["next_observations"]
+        next_obs = (batch["next_observations"], batch["goals"])
         rng, next_action_key = jax.random.split(rng)
         next_actions, next_actions_log_probs = self._compute_next_actions(batch, next_action_key)
         target_next_qs = self.forward_target_critic(next_obs, next_actions, rng=rng)
         target_next_min_q = target_next_qs.min(axis=0)
+        target_next_min_q = self._process_target_next_qs(
+            target_next_min_q,
+            next_actions_log_probs,
+        )
         target_q_batch = batch["rewards"] + self.config["discount"] * batch["masks"] * target_next_min_q
         
         rng, step_rng = jax.random.split(rng)
         scan_data = {
-            "obs": batch["observations"],
+            "obs": (batch["observations"], batch["goals"]),
             "action": batch["actions"],
             "next_obs": next_obs,
             "target_q": target_q_batch,
@@ -507,8 +700,16 @@ class ContinuousCQLTTTAgent(SACAgent):
                 batch["actions"].shape[0], batch["actions"].shape[1], -1
             )
         }
+        
+        # def print_keys_recursive(d, indent=0):
+        #     for key, value in d.items():
+        #         print('  ' * indent + str(key))
+        #         if isinstance(value, dict) or hasattr(value, 'items'):
+        #             print_keys_recursive(value, indent + 1)
 
-        initial_sa_params = params['critic']['sa_encoder']
+        # print_keys_recursive(params)
+
+        initial_sa_params = params['modules_critic']['sa_encoder_def']
         reset_per_trajectory = self.config.get("ttt_reset_per_traj", True)
         
         if reset_per_trajectory:
@@ -531,7 +732,7 @@ class ContinuousCQLTTTAgent(SACAgent):
                 flat_scan_data
             )
 
-        total_active_elements = batch["pad_mask"].sum()
+        total_active_elements = batch["pad_masks"].sum()
         td_loss = td_losses.sum() / total_active_elements
         cql_q_diff = cql_q_diffs.sum() / total_active_elements
         dyn_loss = step_dyn_losses.sum() / total_active_elements
@@ -1345,6 +1546,7 @@ class ContinuousCQLTTTAgent(SACAgent):
             early_goal_concat=early_goal_concat,
             shared_goal_encoder=shared_goal_encoder,
             language_conditioned=config.language_conditioned,
+            use_traj=True
         )
 
         if shared_encoder:
@@ -1360,9 +1562,12 @@ class ContinuousCQLTTTAgent(SACAgent):
             
         print("Encoder def:", encoder_def)
 
-        state_encoder = lambda *args, **kwargs: MLP(**state_encoder_kwargs)(*args, **kwargs)
-        action_encoder = lambda *args, **kwargs: MLP(**action_encoder_kwargs)(*args, **kwargs)
-        sa_encoder = lambda *args, **kwargs: MLP(**state_action_encoder_kwargs)(*args, **kwargs)
+        # state_encoder = lambda *args, **kwargs: MLP(**state_encoder_kwargs)(*args, **kwargs)
+        # action_encoder = lambda *args, **kwargs: MLP(**action_encoder_kwargs)(*args, **kwargs)
+        # sa_encoder = lambda *args, **kwargs: MLP(**state_action_encoder_kwargs)(*args, **kwargs)
+        state_encoder = MLP(**state_encoder_kwargs, name="s_encoder")
+        action_encoder = MLP(**action_encoder_kwargs, name="a_encoder")
+        sa_encoder = MLP(**state_action_encoder_kwargs, name="sa_encoder")
 
         # Define networks
         policy_def = Policy(
@@ -1376,10 +1581,11 @@ class ContinuousCQLTTTAgent(SACAgent):
         critic_backbone = ensemblize(critic_backbone, config.critic_ensemble_size)(
             name="critic_ensemble"
         )
-        dynamics_backbone = lambda *args, **kwargs: MLP(**dynamics_network_kwargs)(*args, **kwargs)
+        # dynamics_backbone = lambda *args, **kwargs: MLP(**dynamics_network_kwargs)(*args, **kwargs)
+        dynamics_backbone = MLP(**dynamics_network_kwargs, name="dynamics_network")
         critic_def = partial(
-            Critic_sa_encoder, encoder=encoders["critic"], s_encoder=state_encoder, a_encoder=action_encoder,
-            sa_encoder=sa_encoder, network=critic_backbone, dynamics_network=dynamics_backbone
+            Critic_sa_encoder, encoder_def=encoders["critic"], s_encoder_def=state_encoder, a_encoder_def=action_encoder,
+            sa_encoder_def=sa_encoder, network_def=critic_backbone, dynamics_network_def=dynamics_backbone
         )(name="critic")
         temperature_def = GeqLagrangeMultiplier(
             init_value=config.temperature_init,

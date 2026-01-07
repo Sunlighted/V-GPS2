@@ -1,5 +1,5 @@
 import functools
-from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Mapping, Sequence, Tuple, Union, Optional
 
 import flax
 import flax.linen as nn
@@ -144,12 +144,15 @@ class JaxRLTrainState(struct.PyTreeNode):
         )
         return self.replace(target_params=new_target_params)
 
-    def apply_gradients(self, *, grads: Any) -> "JaxRLTrainState":
+    def apply_gradients(self, *, grads: Any, pmap_axis: Optional[str] = None) -> "JaxRLTrainState":
         """
         Only difference from flax's TrainState is that `grads` must have
         `self.txs` as a tree prefix (i.e. where `self.txs` has a leaf, `grads`
         has a subtree with the same structure as `self.params`.)
         """
+        if pmap_axis is not None:
+            grads = jax.lax.pmean(grads, axis_name=pmap_axis)
+
         updates_and_new_states = self._tx_tree_map(
             lambda tx, opt_state, grad: tx.update(grad, opt_state, self.params),
             self.txs,
@@ -161,33 +164,24 @@ class JaxRLTrainState(struct.PyTreeNode):
             lambda _, x: x[1], self.txs, updates_and_new_states
         )
 
-        # not the cleanest, I know, but this flattens the leaves of `updates`
-        # into a list where leaves are defined by `self.txs`
         updates_flat = []
         self._tx_tree_map(
             lambda _, update: updates_flat.append(update), self.txs, updates
         )
-
-        # apply all the updates additively
+        
+        from functools import reduce
         updates_acc = jax.tree_map(
-            lambda *xs: jnp.sum(jnp.array(xs), axis=0), *updates_flat
+            lambda *xs: reduce(jnp.add, xs), *updates_flat
         )
+
+        from flax.core import freeze
         new_params = optax.apply_updates(self.params, updates_acc)
-        
-        def _refreeze(new_tree, reference_tree):
-            """Recursively restore FrozenDict structure from reference."""
-            if isinstance(reference_tree, flax.core.FrozenDict):
-                if isinstance(new_tree, dict):
-                    return flax.core.FrozenDict({
-                        k: _refreeze(new_tree[k], reference_tree[k]) 
-                        for k in reference_tree.keys()
-                    })
-            return new_tree
-        
-        new_params = _refreeze(new_params, self.params)
+        new_params = freeze(new_params) 
 
         return self.replace(
-            step=self.step + 1, params=new_params, opt_states=new_opt_states
+            step=self.step + 1, 
+            params=new_params, 
+            opt_states=new_opt_states
         )
 
     def apply_loss_fns(

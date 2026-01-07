@@ -60,15 +60,48 @@ class Critic(nn.Module):
         return jnp.squeeze(value, -1)
     
 class Critic_sa_encoder(nn.Module):
-    encoder: Optional[nn.Module]
-    s_encoder: Optional[nn.Module]
-    a_encoder: Optional[nn.Module]
-    sa_encoder: Optional[nn.Module]
-    network: nn.Module
-    dynamics_network: nn.Module
+    encoder_def: Optional[nn.Module]
+    s_encoder_def: Optional[nn.Module]
+    a_encoder_def: Optional[nn.Module]
+    sa_encoder_def: Optional[nn.Module]
+    network_def: nn.Module
+    dynamics_network_def: nn.Module
     init_final: Optional[float] = None
 
-    @nn.compact
+    def setup(self):
+        self.encoder = self.encoder_def
+        
+        if self.s_encoder_def is not None:
+            self.s_encoder = self.s_encoder_def
+        else:
+            self.s_encoder = None
+
+        if self.a_encoder_def is not None:
+            self.a_encoder = self.a_encoder_def
+        else:
+            self.a_encoder = None
+
+        if self.sa_encoder_def is not None:
+            self.sa_encoder = self.sa_encoder_def
+        else:
+            self.sa_encoder = None
+            
+        self.network = self.network_def
+        self.dynamics_network = self.dynamics_network_def
+        
+        if self.init_final is not None:
+            self.critic_output_head = nn.Dense(
+                1,
+                kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
+                name="critic_output_head"
+            )
+        else:
+            self.critic_output_head = nn.Dense(
+                1, 
+                kernel_init=default_init(),
+                name="critic_output_head"
+            )
+
     def __call__(
         self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False, mode: str = "critic"
     ) -> jnp.ndarray:
@@ -105,17 +138,11 @@ class Critic_sa_encoder(nn.Module):
         dyn_out = self.dynamics_network(inputs, train=train)
             
         if mode == 'critic':
-            if self.init_final is not None:
-                value = nn.Dense(
-                    1,
-                    kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
-                )(critic_out)
-            else:
-                value = nn.Dense(1, kernel_init=default_init())(critic_out)
+            value = self.critic_output_head(critic_out)
             return jnp.squeeze(value, -1)
-        elif mode == 'dynamics':
-            return dyn_out
-        
+        elif mode == 'dynamics_embedding':
+            return sa_enc
+
     def compute_target(
         self, next_observations: jnp.ndarray
     ) -> jnp.ndarray:

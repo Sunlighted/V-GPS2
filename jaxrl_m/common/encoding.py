@@ -150,6 +150,7 @@ class LCEncodingWrapper(nn.Module):
     encoder: nn.Module
     use_proprio: bool
     stop_gradient: bool
+    use_traj: bool = False
 
     def __call__(
         self,
@@ -163,20 +164,32 @@ class LCEncodingWrapper(nn.Module):
             # fold batch_size into obs_horizon to encode each frame separately
             obs_image = rearrange(observations["image"], "B T H W C -> (B T) H W C")
             # repeat language so that there's an instruction for each frame
-            language = repeat(
-                goals["language"], "B E -> (B repeat) E", repeat=obs_horizon
-            )
+            if goals["language"].ndim == 3:
+                language = rearrange(goals["language"], "B T E -> (B T) E")
+            elif goals["language"].ndim == 2:
+                language = repeat(goals["language"], "B E -> (B repeat) E", repeat=obs_horizon)
+            # language = repeat(
+            #     goals["language"], "B E -> (B repeat) E", repeat=obs_horizon
+            # )
         else:
             obs_image = observations["image"]
             language = goals["language"]
 
-        encoding = self.encoder(obs_image, cond_var=language)
+        encoding = self.encoder(obs_image, cond_var=language) # (B, T, F)
 
         if len(observations["image"].shape) == 5:
-            # unfold obs_horizon from batch_size
-            encoding = rearrange(
-                encoding, "(B T) F -> B (T F)", B=batch_size, T=obs_horizon
-            )
+            if self.use_traj:
+                # reshape to (B, T, F)
+                encoding = rearrange(
+                    encoding, "(B T) F -> B T F", B=batch_size, T=obs_horizon
+                )
+                # # then flatten to (B, T*F)
+                # encoding = encoding.reshape(encoding.shape[0], -1)
+            else:
+                # unfold obs_horizon from batch_size
+                encoding = rearrange(
+                    encoding, "(B T) F -> B (T F)", B=batch_size, T=obs_horizon
+                )
 
         if self.use_proprio:
             encoding = jnp.concatenate([encoding, observations["proprio"]], axis=-1)

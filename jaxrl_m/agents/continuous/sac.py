@@ -290,8 +290,8 @@ class SACAgent(flax.struct.PyTreeNode):
             rng=critic_rng,
         )
         predicted_q = predicted_qs.min(axis=0)
-        chex.assert_shape(predicted_q, (batch_size,))
-        chex.assert_shape(log_probs, (batch_size,))
+        # chex.assert_shape(predicted_q, (batch_size,))
+        # chex.assert_shape(log_probs, (batch_size,))
 
         nll_objective = -jnp.mean(
             action_distributions.log_prob(jnp.clip(batch["actions"], -0.99, 0.99))
@@ -530,6 +530,7 @@ class SACAgent(flax.struct.PyTreeNode):
         early_goal_concat: bool,
         shared_goal_encoder: bool,
         language_conditioned: bool,
+        use_traj: bool,
     ):
         if goal_conditioned and not language_conditioned:
             if early_goal_concat:
@@ -554,6 +555,7 @@ class SACAgent(flax.struct.PyTreeNode):
                 encoder=encoder_def,
                 use_proprio=use_proprio,
                 stop_gradient=False,
+                use_traj=use_traj, 
             )
 
         else:
