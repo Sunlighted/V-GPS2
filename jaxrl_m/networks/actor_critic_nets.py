@@ -118,16 +118,16 @@ class Critic_sa_encoder(nn.Module):
                 obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
                 
         if self.s_encoder is not None:
-            obs_enc = self.s_encoder(obs_enc)
+            s_enc = self.s_encoder(obs_enc)
         else:
-            obs_enc = obs_enc
+            s_enc = obs_enc
 
         if self.a_encoder is not None:
             action_enc = self.a_encoder(actions)
         else:
             action_enc = actions
 
-        sa_enc = jnp.concatenate([obs_enc, action_enc], -1)
+        sa_enc = jnp.concatenate([s_enc, action_enc], -1)
         
         if self.sa_encoder is not None:
             inputs = self.sa_encoder(sa_enc)
@@ -142,6 +142,8 @@ class Critic_sa_encoder(nn.Module):
             return jnp.squeeze(value, -1)
         elif mode == 'dynamics_embedding':
             return sa_enc
+        elif mode == 'encoder':
+            return obs_enc
 
     def compute_target(
         self, next_observations: jnp.ndarray
@@ -354,6 +356,77 @@ def ensemblize(cls, num_qs, out_axes=0):
         axis_size=num_qs,
     )
 
+class Policyen(nn.Module):
+    encoder_def: Optional[nn.Module]
+    network_def: nn.Module
+    action_dim: int
+    init_final: Optional[float] = None
+    std_parameterization: str = "exp"
+    std_min: Optional[float] = 1e-5
+    std_max: Optional[float] = 10.0
+    tanh_squash_distribution: bool = False
+    fixed_std: Optional[jnp.ndarray] = None
+
+    def setup(self):
+        # 1. 预定义子模块
+        self.encoder = self.encoder_def
+        self.network = self.network_def
+        
+        # 2. 预定义输出层 (必须在 setup 中定义以实现参数共享)
+        self.means_head = nn.Dense(self.action_dim, kernel_init=nn.initializers.xavier_uniform())
+        
+        if self.fixed_std is None:
+            if self.std_parameterization in ["exp", "softplus"]:
+                self.stds_head = nn.Dense(self.action_dim, kernel_init=nn.initializers.xavier_uniform())
+            elif self.std_parameterization == "uniform":
+                self.log_stds_param = self.param("log_stds", nn.initializers.zeros, (self.action_dim,))
+
+    def forward_from_embedding(self, obs_enc: jnp.ndarray, temperature: float = 1.0, train: bool = False) -> distrax.Distribution:
+        """
+        核心逻辑：直接从 Embedding 计算动作分布。
+        TTT 循环 (scan) 内部调用此方法。
+        """
+        # 处理可能存在的 dict 类型输入
+        if isinstance(obs_enc, dict):
+            obs_enc_values = list(obs_enc.values())
+            obs_enc = obs_enc_values[0] if len(obs_enc_values) == 1 else jnp.concatenate(obs_enc_values, axis=-1)
+
+        # 运行 MLP 网络
+        outputs = self.network(obs_enc, train=train)
+
+        # 计算均值
+        means = self.means_head(outputs)
+
+        # 计算标准差
+        if self.fixed_std is not None:
+            stds = jnp.array(self.fixed_std)
+        elif self.std_parameterization == "exp":
+            stds = jnp.exp(self.stds_head(outputs))
+        elif self.std_parameterization == "softplus":
+            stds = nn.softplus(self.stds_head(outputs))
+        elif self.std_parameterization == "uniform":
+            stds = jnp.exp(self.log_stds_param)
+        else:
+            raise ValueError(f"Invalid std_parameterization: {self.std_parameterization}")
+
+        # 缩放并限制范围
+        stds = jnp.clip(stds, self.std_min, self.std_max) * jnp.sqrt(temperature)
+
+        if self.tanh_squash_distribution:
+            return TanhMultivariateNormalDiag(loc=means, scale_diag=stds)
+        return distrax.MultivariateNormalDiag(loc=means, scale_diag=stds)
+
+    def __call__(self, observations: jnp.ndarray, temperature: float = 1.0, train: bool = False) -> distrax.Distribution:
+        """
+        完整流程：图像 -> 编码器 -> 动作分布。
+        非 TTT 阶段或初始化时调用。
+        """
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+            
+        return self.forward_from_embedding(obs_enc, temperature, train)
 
 class Policy(nn.Module):
     encoder: Optional[nn.Module]

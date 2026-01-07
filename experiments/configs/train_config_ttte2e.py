@@ -23,7 +23,7 @@ def get_config(config_string):
                     goal_conditioned=True,
                     early_goal_concat=None,
                     shared_goal_encoder=None,
-                    shared_encoder=False,
+                    shared_encoder=True,
                     learning_rate=3e-4,
                     warmup_steps=2000,
                     discount=0.98,

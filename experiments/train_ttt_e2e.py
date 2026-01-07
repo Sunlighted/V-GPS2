@@ -88,38 +88,38 @@ def main(_):
         )
 
     def process_text(batch):
-        print("\n" + "="*30)
-        print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
+        # print("\n" + "="*30)
+        # print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
         
-        # 定义要检查的键
-        check_keys = [
-            ('actions', batch['actions']),
-            ('mc_returns', batch['mc_returns']),
-            ('rewards', batch['rewards']),
-            ('masks', batch['masks']),
-            ('observations_image', batch['observations']['image']),
-            ('next_observations_image', batch['next_observations']['image']),
-            ('language_raw', batch['goals']['language'])
-        ]
+        # # 定义要检查的键
+        # check_keys = [
+        #     ('actions', batch['actions']),
+        #     ('mc_returns', batch['mc_returns']),
+        #     ('rewards', batch['rewards']),
+        #     ('masks', batch['masks']),
+        #     ('observations_image', batch['observations']['image']),
+        #     ('next_observations_image', batch['next_observations']['image']),
+        #     ('language_raw', batch['goals']['language'])
+        # ]
 
-        for name, val in check_keys:
-            if hasattr(val, 'shape'):
-                print(f"{name: <25} shape: {val.shape}")
-            else:
-                print(f"{name: <25} type: {type(val)}")
+        # for name, val in check_keys:
+        #     if hasattr(val, 'shape'):
+        #         print(f"{name: <25} shape: {val.shape}")
+        #     else:
+        #         print(f"{name: <25} type: {type(val)}")
         
-        print("="*30 + "\n")
+        # print("="*30 + "\n")
         # === 安全 Debug 打印结束 ===
         if text_processor is not None:
-            print("--- DEBUG TEXT PROCESSOR ---")
-            print(f"Type: {type(batch['goals']['language'])}")
-            # 如果是 numpy 数组，看它的 shape
-            if hasattr(batch['goals']['language'], 'shape'):
-                print(f"Shape: {batch['goals']['language'].shape}")
-            # 看看第一个元素到底是什么
-            first_elem = batch['goals']['language'][0]
-            print(f"First element type: {type(first_elem)}")
-            print(f"First element value: {first_elem}")
+            # print("--- DEBUG TEXT PROCESSOR ---")
+            # print(f"Type: {type(batch['goals']['language'])}")
+            # # 如果是 numpy 数组，看它的 shape
+            # if hasattr(batch['goals']['language'], 'shape'):
+            #     print(f"Shape: {batch['goals']['language'].shape}")
+            # # 看看第一个元素到底是什么
+            # first_elem = batch['goals']['language'][0]
+            # print(f"First element type: {type(first_elem)}")
+            # print(f"First element value: {first_elem}")
             
             batch["goals"]["language"] = text_processor.encode(
                 [s.decode("utf-8") for s in batch["goals"]["language"]]
@@ -127,28 +127,28 @@ def main(_):
         return batch
     
     def process_traj_text(batch):
-        print("\n" + "="*30)
-        print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
+        # print("\n" + "="*30)
+        # print("DEBUG: TRIPLE CHECKING SHAPES IN process_traj_text")
         
-        # 定义要检查的键
-        check_keys = [
-            ('actions', batch['actions']),
-            ('mc_returns', batch['mc_returns']),
-            ('rewards', batch['rewards']),
-            ('masks', batch['masks']),
-            ('pad_masks', batch['pad_masks']),
-            ('observations_image', batch['observations']['image']),
-            ('next_observations_image', batch['next_observations']['image']),
-            ('language_raw', batch['goals']['language'])
-        ]
+        # # 定义要检查的键
+        # check_keys = [
+        #     ('actions', batch['actions']),
+        #     ('mc_returns', batch['mc_returns']),
+        #     ('rewards', batch['rewards']),
+        #     ('masks', batch['masks']),
+        #     ('pad_masks', batch['pad_masks']),
+        #     ('observations_image', batch['observations']['image']),
+        #     ('next_observations_image', batch['next_observations']['image']),
+        #     ('language_raw', batch['goals']['language'])
+        # ]
 
-        for name, val in check_keys:
-            if hasattr(val, 'shape'):
-                print(f"{name: <25} shape: {val.shape}")
-            else:
-                print(f"{name: <25} type: {type(val)}")
+        # for name, val in check_keys:
+        #     if hasattr(val, 'shape'):
+        #         print(f"{name: <25} shape: {val.shape}")
+        #     else:
+        #         print(f"{name: <25} type: {type(val)}")
         
-        print("="*30 + "\n")
+        # print("="*30 + "\n")
         # === 安全 Debug 打印结束 ===
         if text_processor is not None:
             # 当前 batch["goals"]["language"] 形状是 (4, 120)
@@ -324,23 +324,23 @@ def main(_):
     )
 
     example_batch = next(train_data_iter)
-    def debug_print_shapes(data, indent=0):
-        for key, value in data.items():
-            print("  " * indent + f"[{key}]:", end=" ")
-            if isinstance(value, dict):
-                print() # 换行处理子字典
-                debug_print_shapes(value, indent + 1)
-            elif hasattr(value, "shape"):
-                # 打印形状和类型（方便区分是 CPU 的 NumPy 还是 TPU 的 DeviceArray）
-                print(f"{value.shape}  ({type(value).__name__})")
-            else:
-                print(f"{type(value)}")
+    # def debug_print_shapes(data, indent=0):
+    #     for key, value in data.items():
+    #         print("  " * indent + f"[{key}]:", end=" ")
+    #         if isinstance(value, dict):
+    #             print() # 换行处理子字典
+    #             debug_print_shapes(value, indent + 1)
+    #         elif hasattr(value, "shape"):
+    #             # 打印形状和类型（方便区分是 CPU 的 NumPy 还是 TPU 的 DeviceArray）
+    #             print(f"{value.shape}  ({type(value).__name__})")
+    #         else:
+    #             print(f"{type(value)}")
 
-    # 运行调试
-    print("\n" + "="*40)
-    print("DEBUG: BATCH SHAPES")
-    debug_print_shapes(example_batch)
-    print("="*40 + "\n")
+    # # 运行调试
+    # print("\n" + "="*40)
+    # print("DEBUG: BATCH SHAPES")
+    # debug_print_shapes(example_batch)
+    # print("="*40 + "\n")
     logging.info(f"Batch size: {example_batch['observations']['image'].shape[0]}")
     logging.info(f"Trajectory length: {example_batch['observations']['image'].shape[1]}")
     logging.info(f"Number of devices: {num_devices}")

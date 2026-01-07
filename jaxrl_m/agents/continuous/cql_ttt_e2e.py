@@ -18,7 +18,7 @@ from jaxrl_m.agents.continuous.sac import SACAgent
 from jaxrl_m.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from jaxrl_m.common.optimizers import make_optimizer
 from jaxrl_m.common.typing import *
-from jaxrl_m.networks.actor_critic_nets import Critic_sa_encoder, Dynamics_sa_encoder, Policy, ensemblize
+from jaxrl_m.networks.actor_critic_nets import Critic_sa_encoder, Dynamics_sa_encoder, Policyen, ensemblize
 from jaxrl_m.networks.lagrange import GeqLagrangeMultiplier, LeqLagrangeMultiplier
 from jaxrl_m.networks.mlp import MLP, Scalar
 import matplotlib
@@ -157,6 +157,41 @@ class ContinuousCQLTTTAgent(SACAgent):
                 name="critic",
                 train=train,
                 mode="dynamics_embedding"
+            )
+            
+    def forward_encoder(
+        self,
+        observations: jnp.ndarray,
+        actions: jnp.ndarray,
+        *,
+        grad_params: Optional[Params] = None,
+        train: bool = True,
+    ) -> jnp.ndarray:
+        """
+        Forward pass for dynamics network to predict next state embedding.
+        Supports both single action and multiple sampled actions.
+        """
+        if jnp.ndim(actions) == 4:
+            return jax.vmap(
+                lambda a: self.state.apply_fn(
+                    {"params": grad_params or self.state.params},
+                    observations,
+                    a,
+                    name="critic", 
+                    train=train,
+                    mode="encoder"
+                ),
+                in_axes=2,
+                out_axes=2,
+            )(actions)
+        else:
+            return self.state.apply_fn(
+                {"params": grad_params or self.state.params},
+                observations,
+                actions,
+                name="critic",
+                train=train,
+                mode="encoder"
             )
     
     @overrides
@@ -459,6 +494,103 @@ class ContinuousCQLTTTAgent(SACAgent):
 
         return target_next_qs
     
+    def _get_vec_cql_q_diff(
+        self, 
+        s_enc_raw: jnp.ndarray,       # (512,) 向量，预计算好的状态特征
+        next_s_enc: jnp.ndarray,  # (512,) 向量
+        action: jnp.ndarray,      # (7,) 原始动作
+        rng: PRNGKey, 
+        grad_params: Params,      # 包含全局参数
+        p_ttt: dict               # 当前 TTT 更新后的 sa_encoder 参数 (5层字典)
+    ) -> Tuple[jnp.ndarray, Dict[str, Any]]:
+        """
+        纯向量版 CQL 计算：
+        1. 不触碰图像，只处理 (512,) 维度的向量。
+        2. 使用 TTT 更新后的参数 p_ttt 计算 sa_encoder。
+        """
+        p_critic = grad_params['modules_critic']
+        action_dim = action.shape[-1]
+        num_samples = self.config["cql_n_actions"]
+        eps = 1e-6
+
+        # --- [辅助函数：手动运行 sa_encoder (MLP 3层)] ---
+        def run_sa_ttt(s, a_vec, p):
+            # 匹配你的 MLP 结构: Dense -> LN -> Swish
+            x = jnp.concatenate([s, a_vec], axis=-1)
+            # Layer 0
+            z = jnp.dot(x, p['Dense_0']['kernel']) + p['Dense_0']['bias']
+            ln = (z - jnp.mean(z)) / jnp.sqrt(jnp.var(z) + eps) * p['LayerNorm_0']['scale'] + p['LayerNorm_0']['bias']
+            x = jax.nn.swish(ln)
+            # Layer 1
+            z = jnp.dot(x, p['Dense_1']['kernel']) + p['Dense_1']['bias']
+            ln = (z - jnp.mean(z)) / jnp.sqrt(jnp.var(z) + eps) * p['LayerNorm_1']['scale'] + p['LayerNorm_1']['bias']
+            x = jax.nn.swish(ln)
+            # Layer 2 (Final)
+            return jnp.dot(x, p['Dense_2']['kernel']) + p['Dense_2']['bias']
+
+        # --- [Step 1: 计算当前动作的 q_pred] ---
+        # a_enc (256,)
+        s_enc = self.state.apply_fn(
+            {'params': grad_params}, 
+            s_enc_raw, 
+            method=lambda m, x: m.modules["critic"].s_encoder(x)
+        )
+        a_enc = self.state.apply_fn(
+            {'params': grad_params}, 
+            action, 
+            method=lambda m, x: m.modules["critic"].a_encoder(x)
+        )
+        ttt_out = run_sa_ttt(s_enc, a_enc, p_ttt)
+        # Q Head
+        q_pred = self.state.apply_fn({'params': grad_params}, ttt_out, 
+                                    method=lambda m, x: m.modules["critic"].critic_output_head(m.modules["critic"].network(x)))
+        q_pred = jnp.squeeze(q_pred)
+
+        # --- [Step 2: 采样 OOD 动作] ---
+        rng, action_rng, cur_rng, next_rng = jax.random.split(rng, 4)
+        # 随机动作
+        cql_random_actions = jax.random.uniform(action_rng, shape=(num_samples, action_dim), minval=-1.0, maxval=1.0)
+        
+        # 从 Policy 采样 (基于向量 s_enc)
+        def policy_sample(s_v, r_k):
+            dist = self.state.apply_fn(
+                {'params': grad_params}, 
+                s_v, 
+                method=lambda m, x: m.modules["actor"].forward_from_embedding(x, train=False)
+            )
+            # 此时 dist 是真正的 distrax.Distribution 对象，不再是 Tracer
+            return dist.sample_and_log_prob(seed=r_k, sample_shape=(num_samples,))
+
+        cql_current_actions, cql_current_log_pis = policy_sample(s_enc_raw, cur_rng)
+        cql_next_actions, cql_next_log_pis = policy_sample(next_s_enc, next_rng)
+
+        all_actions = jnp.concatenate([cql_random_actions, cql_current_actions, cql_next_actions], axis=0)
+
+        # --- [Step 3: 计算所有采样动作的 Q 值] ---
+        all_a_enc = self.state.apply_fn({'params': grad_params}, all_actions, method=lambda m, x: m.modules["critic"].a_encoder(x))
+        # vmap 处理所有采样的动作
+        all_ttt_out = jax.vmap(lambda a_v: run_sa_ttt(s_enc, a_v, p_ttt))(all_a_enc)
+
+        all_q_samples = self.state.apply_fn({'params': grad_params}, all_ttt_out,
+                                        method=lambda m, x: m.modules["critic"].critic_output_head(m.modules["critic"].network(x)))
+        all_q_samples = jnp.squeeze(all_q_samples)
+
+        # --- [Step 4: CQL 数学逻辑 (与原版一致)] ---
+        if self.config["cql_importance_sample"]:
+            random_density = jnp.log(0.5**action_dim)
+            importance_prob = jnp.concatenate([
+                jnp.full((num_samples,), random_density),
+                cql_current_log_pis,
+                cql_next_log_pis
+            ], axis=0)
+            all_q_samples = all_q_samples - importance_prob
+        else:
+            all_q_samples = jnp.concatenate([all_q_samples, jnp.expand_dims(q_pred, -1)], axis=-1)
+            all_q_samples -= jnp.log(all_q_samples.shape[-1]) * self.config["cql_temp"]
+
+        cql_ood_values = jax.scipy.special.logsumexp(all_q_samples / self.config["cql_temp"]) * self.config["cql_temp"]
+        return cql_ood_values - q_pred, {"ood_val": cql_ood_values}
+        
     def _get_single_cql_q_diff(
         self, obs: Data, next_obs: Data, action: jnp.ndarray, mc_return: jnp.ndarray, rng: PRNGKey, grad_params: Params
     ) -> Tuple[jnp.ndarray, Dict[str, Any]]:
@@ -550,21 +682,19 @@ class ContinuousCQLTTTAgent(SACAgent):
         1. 基于当前 sa_params 进行一次 inner update (Dynamics Loss)
         2. 使用更新后的参数计算当前 step 的 RL Loss (TD + CQL)
         """
-        obs = transition["obs"]
         action = transition["action"]
-        next_obs = transition["next_obs"]
         target_q = transition["target_q"]
         rng = transition["rng"]
         pad_mask = transition["pad_mask"]
-
-        target_zs = self.get_dynamics_target(next_obs, grad_params=global_params)
-        target_zs = jax.lax.stop_gradient(target_zs)
-        
-        sa_enc = self.forward_dynamics(obs, action, grad_params=global_params)
-        sa_enc = jax.lax.stop_gradient(sa_enc)
+        target_zs = transition["target_z"]
+        sa_enc = transition["sa_enc"]
+        s_enc = transition["s_enc"]
+        next_s_enc = transition["ns_enc"]
         
         p_ttt = current_sa_params
         p_dyn = global_params['modules_critic']['dynamics_network_def']
+        p_q_net = global_params['modules_critic']['network_def']
+        p_q_head = global_params['modules_critic']['critic_output_head']
         
         eps = 1e-6 # 建议与 Flax 默认对齐
 
@@ -581,18 +711,25 @@ class ContinuousCQLTTTAgent(SACAgent):
         a_t1, z_t1, ln_t1 = layer_fwd(a_t0, p_ttt['Dense_1'], p_ttt['LayerNorm_1'])
         # L2 无 LN 和 Swish
         ttt_out = jnp.dot(a_t1, p_ttt['Dense_2']['kernel']) + p_ttt['Dense_2']['bias']
+        
+        # def dyn_loss_fn(val):
+        #     # 只在 dynamics 网络这个小 MLP 上求梯度
+        #     pred = self.state.apply_fn({'params': {'dynamics_network_def': p_dyn}}, 
+        #                              val, method=lambda m, x: m.dynamics_network(x))
+        #     return 0.5 * jnp.mean(jnp.square(pred - target_zs))
+        
+        # # 关键：只针对 ttt_out 求导，截断到 sa_encoder 的输出端
+        # g_up = jax.grad(dyn_loss_fn)(ttt_out) * pad_mask
 
         # Dynamics Part (根据你定义的 activate_final=True 和 LN)
         # 假设 Dynamics Head 是 Dense -> LN -> Swish
-        z_d0 = jnp.dot(ttt_out, p_dyn['Dense_0']['kernel']) + p_dyn['Dense_0']['bias']
-        mean_d = jnp.mean(z_d0, axis=-1, keepdims=True)
-        var_d = jnp.var(z_d0, axis=-1, keepdims=True)
-        ln_d0 = (z_d0 - mean_d) / jnp.sqrt(var_d + eps) * p_dyn['LayerNorm_0']['scale'] + p_dyn['LayerNorm_0']['bias']
-        next_s_pred = jax.nn.swish(ln_d0)
+        # z_d0 = jnp.dot(ttt_out, p_dyn['Dense_0']['kernel']) + p_dyn['Dense_0']['bias']
+        # mean_d = jnp.mean(z_d0, axis=-1, keepdims=True)
+        # var_d = jnp.var(z_d0, axis=-1, keepdims=True)
+        # ln_d0 = (z_d0 - mean_d) / jnp.sqrt(var_d + eps) * p_dyn['LayerNorm_0']['scale'] + p_dyn['LayerNorm_0']['bias']
+        # next_s_pred = jax.nn.swish(ln_d0)
+        next_s_pred, z_d0, ln_d0 = layer_fwd(ttt_out, p_dyn['Dense_0'], p_dyn['LayerNorm_0'], apply_act=False)
 
-        # --- [Step 2: Backward Pass] ---
-        # 初始梯度: dL/d(next_s_pred)
-        # 如果是 MSE 且用 mean，系数是 2/dim
         dim_z = next_s_pred.shape[-1]
         g_up = (2.0 / dim_z) * (next_s_pred - target_zs) * pad_mask
         step_dyn_loss = jnp.mean(jnp.square(next_s_pred - target_zs)) * pad_mask
@@ -630,8 +767,9 @@ class ContinuousCQLTTTAgent(SACAgent):
             'LayerNorm_1': {'scale': p_ttt['LayerNorm_1']['scale'] - inner_lr * g_s1, 'bias': p_ttt['LayerNorm_1']['bias'] - inner_lr * g_beta1},
         }
         
-        updated_sa_params = jax.lax.stop_gradient(current_sa_params.copy({'params': new_p_ttt}))
-
+        
+        updated_sa_params = jax.lax.stop_gradient(new_p_ttt)
+        
         # def dynamics_loss_fn(p_sa):
         #     t_params = global_params.copy({
         #         'modules_critic': global_params['modules_critic'].copy({'sa_encoder_def': p_sa})
@@ -654,14 +792,12 @@ class ContinuousCQLTTTAgent(SACAgent):
             'modules_critic': global_params['modules_critic'].copy({'sa_encoder_def': updated_sa_params})
         })
 
-        current_q = self.forward_critic(
-            obs, action, rng=rng, 
-            grad_params=adapted_params, train=train
-        )
+        current_q = self.state.apply_fn({'params': adapted_params}, 
+                                     ttt_out, method=lambda m, x: m.modules["critic"].critic_output_head(m.modules["critic"].network(x)))
         td_loss = jnp.square(current_q - target_q) * pad_mask
 
-        cql_q_diff, cql_info = self._get_single_cql_q_diff(
-            obs, next_obs, action, transition["mc_return"], rng, adapted_params
+        cql_q_diff, cql_info = self._get_vec_cql_q_diff(
+            s_enc, next_s_enc, action, rng, adapted_params, updated_sa_params
         )
         
         cql_q_diff = cql_q_diff * pad_mask
@@ -688,14 +824,28 @@ class ContinuousCQLTTTAgent(SACAgent):
         )
         target_q_batch = batch["rewards"] + self.config["discount"] * batch["masks"] * target_next_min_q
         
+        target_zs = self.get_dynamics_target(next_obs)
+        target_zs = jax.lax.stop_gradient(target_zs)
+
+        sa_enc = self.forward_dynamics((batch["observations"], batch["goals"]), batch["actions"])
+        sa_enc = jax.lax.stop_gradient(sa_enc)
+        
+        s_enc = self.forward_encoder((batch["observations"], batch["goals"]), batch["actions"])
+        s_enc = jax.lax.stop_gradient(s_enc)
+
+        ns_enc = self.forward_encoder(next_obs, batch["actions"])
+        ns_enc = jax.lax.stop_gradient(ns_enc)
+
         rng, step_rng = jax.random.split(rng)
         scan_data = {
-            "obs": (batch["observations"], batch["goals"]),
+            "s_enc": s_enc,
             "action": batch["actions"],
-            "next_obs": next_obs,
+            "ns_enc": ns_enc,
             "target_q": target_q_batch,
             "mc_return": batch["mc_returns"],
             "pad_mask": batch["pad_masks"],
+            "target_z": target_zs,
+            "sa_enc": sa_enc,
             "rng": jax.random.split(step_rng, batch["actions"].shape[0] * batch["actions"].shape[1]).reshape(
                 batch["actions"].shape[0], batch["actions"].shape[1], -1
             )
@@ -709,7 +859,7 @@ class ContinuousCQLTTTAgent(SACAgent):
 
         # print_keys_recursive(params)
 
-        initial_sa_params = params['modules_critic']['sa_encoder_def']
+        initial_sa_params = flax.serialization.to_state_dict(params['modules_critic']['sa_encoder_def'])
         reset_per_trajectory = self.config.get("ttt_reset_per_traj", True)
         
         if reset_per_trajectory:
@@ -1570,9 +1720,9 @@ class ContinuousCQLTTTAgent(SACAgent):
         sa_encoder = MLP(**state_action_encoder_kwargs, name="sa_encoder")
 
         # Define networks
-        policy_def = Policy(
-            encoder=encoders["actor"],
-            network=MLP(**policy_network_kwargs),
+        policy_def = Policyen(
+            encoder_def=encoders["actor"],
+            network_def=MLP(**policy_network_kwargs),
             action_dim=actions.shape[-1],
             **policy_kwargs,
             name="actor",
