@@ -3,7 +3,7 @@ save_dir="/home/chenyangcao/V-GPS/save" # FILL IN
 
 
 PROJECT=VGPS
-batch_size=4
+batch_size=16
 data_mix=bridge_fractal
 discount=0.98
 

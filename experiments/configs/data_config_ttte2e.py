@@ -64,7 +64,7 @@ def update_config(config, **kwargs):
 
 def get_config():
 
-    config = get_dataset_config(window_size=1)
+    config = get_dataset_config(window_size=32)
     action_dim = FieldReference(7)
 
     primary_augment_kwargs = dict(
@@ -118,7 +118,7 @@ def get_config():
             image_dropout_prob=0.0,
         ),
         batch_size=512,
-        shuffle_buffer_size=400,
+        shuffle_buffer_size=1000,
         balance_weights=True,
     )
 

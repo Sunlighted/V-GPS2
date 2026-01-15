@@ -841,79 +841,62 @@ def make_interleaved_traj_dataset(
 
 def slice_and_pad_trajectory(
     traj: dict, 
-    window_size: int = 32, 
-    stride: int = 1
-) -> tf.data.Dataset:
+    window_size: int, 
+    stride: int
+) -> dict:
     """
-    将一条轨迹切分为多个重叠的子轨迹 (Windows)。
-    如果子轨迹长度不足 window_size，则进行补零 (Zero-Padding) 并生成 mask。
-    
-    Args:
-        traj: 包含 'action', 'observation', 'task' 等键的字典。
-              期望时间维度在第 0 维。
-        window_size: 目标输出的时间步长度 (Horizon)。
-        stride: 滑动窗口的步长。
+    使用向量化操作将轨迹切片，并使用 'Edge Padding' (重复最后一帧) 处理不足的部分。
+    这确保了 Padding 部分的数据形状（如图像大小）与真实数据完全一致。
     """
-    # 获取当前轨迹的实际长度
+    # 1. 确定轨迹长度和窗口数量
     traj_len = tf.shape(traj["action"])[0]
+    num_windows = (traj_len + stride - 1) // stride
     
-    # 计算需要生成多少个窗口
-    # 如果 traj_len < window_size，num_windows 为 1 (这种情况下我们取整个轨迹然后 padding)
-    # 如果 traj_len >= window_size，num_windows = traj_len - window_size + 1 (对于 stride=1)
-    num_windows = tf.maximum(1, (traj_len - window_size + stride) // stride)
+    # 2. 构建向量化索引
+    start_indices = tf.range(num_windows) * stride
+    grid_indices = start_indices[:, None] + tf.range(window_size)
     
-    # 生成所有窗口的起始索引
-    starts = tf.range(0, num_windows * stride, stride)
+    # 3. 生成 Pad Mask (1=Real, 0=Padding)
+    pad_mask = grid_indices < traj_len
+    
+    # 4. 索引重定向 (Index Clamping)
+    # 将所有越界索引指向 traj_len - 1 (即最后一个真实元素)
+    # 这样越界部分就会重复最后一帧的数据，而不是读取未知的 Zero Row
+    gather_indices = tf.minimum(grid_indices, traj_len - 1)
 
-    def _get_window(start_idx):
-        # 计算当前切片的结束索引
-        end_idx = tf.minimum(start_idx + window_size, traj_len)
-        actual_len = end_idx - start_idx
-        
-        # 1. 切片逻辑 (Slicing)
-        def slice_tensor(x):
-            # 只有当 tensor 的第0维等于 traj_len 时才切片 (处理时间相关的 tensor)
-            # 比如 action, observation
-            if isinstance(x, tf.Tensor) and tf.rank(x) >= 1 and tf.shape(x)[0] == traj_len:
-                return x[start_idx:end_idx]
-            # 对于非时间相关的 (如 language_instruction), 保持原样
+    def _process_tensor(x):
+        if not isinstance(x, tf.Tensor):
             return x
             
-        sub_traj = tf.nest.map_structure(slice_tensor, traj)
-        
-        # 2. 补齐逻辑 (Padding)
-        # 如果切出来的长度小于 window_size，说明是短轨迹，或者切到了尾部（视逻辑而定，这里主要是处理短轨迹）
-        pad_len = window_size - actual_len
-        
-        def pad_tensor(x):
-            # 只有当 tensor 的第0维等于 actual_len 时才补齐
-            if isinstance(x, tf.Tensor) and tf.rank(x) >= 1 and tf.shape(x)[0] == actual_len:
-                # 构造 padding 配置: [[0, pad_len], [0, 0], ...]
-                rank = tf.rank(x)
-                paddings = tf.concat(
-                    [[[0, pad_len]], tf.zeros((rank - 1, 2), dtype=tf.int32)], 
-                    axis=0
-                )
-                # 使用 0 进行填充 (Zero Padding)
-                # 注意：这里用 0 填充是安全的，因为我们会生成 mask
-                return tf.pad(x, paddings, mode="CONSTANT", constant_values=0)
-            return x
+        # --- 情况 A: 序列数据 (Sequence Data) ---
+        if tf.rank(x) >= 1 and tf.shape(x)[0] == traj_len:
+            # 直接 Gather
+            # 因为 gather_indices 已经被限制在 [0, traj_len-1] 范围内
+            # 所以不需要额外 concat zero_row，直接读取即可
+            windows = tf.gather(x, gather_indices)
+            
+            # 强制设置静态形状 (Set Static Shape)
+            # 这一步对 dl.vmap 依然至关重要
+            if windows.shape.ndims is not None:
+                s = windows.shape.as_list()
+                s[1] = window_size 
+                windows.set_shape(s)
+                
+            return windows
+            
+        # --- 情况 B: 全局数据 (Global Data) ---
+        else:
+            return tf.repeat(x[None], num_windows, axis=0)
 
-        padded_traj = tf.nest.map_structure(pad_tensor, sub_traj)
-        
-        # 3. 生成 Mask
-        # 1 代表真实数据，0 代表填充数据
-        pad_mask = tf.concat([
-            tf.ones(actual_len, dtype=tf.bool),
-            tf.zeros(pad_len, dtype=tf.bool)
-        ], axis=0)
-        
-        padded_traj["pad_mask"] = pad_mask
-        
-        return padded_traj
+    # 对字典中所有数据应用处理
+    chunked_traj = tf.nest.map_structure(_process_tensor, traj)
+    
+    # 添加 pad_mask
+    pad_mask.set_shape([None, window_size])
+    chunked_traj["pad_mask"] = pad_mask
 
-    # 将索引映射为实际的子轨迹数据
-    return tf.data.Dataset.from_tensor_slices(starts).map(_get_window)
+    return chunked_traj
+
 
 def make_sliding_window_dataset(
     dataset_kwargs_list: Sequence[dict],
@@ -921,8 +904,8 @@ def make_sliding_window_dataset(
     *,
     train: bool,
     shuffle_buffer_size: int,
-    window_size: int = 32,  # 你的 Horizon
-    stride: int = 1,        # 你的 Stride
+    window_size: int = 32,
+    stride: int = 1,
     traj_transform_kwargs: dict = {},
     frame_transform_kwargs: dict = {},
     batch_size: Optional[int] = None,
@@ -931,14 +914,19 @@ def make_sliding_window_dataset(
     traj_read_threads: Optional[int] = None,
 ) -> dl.DLataset:
     """
-    创建一个基于滑动窗口的数据集。
-    输入：原始 RLDS 轨迹。
-    输出：形状为 (window_size, ...) 的子轨迹 Batch。
+    创建滑动窗口数据集。
+    使用 map + unbatch 的高效 Pattern。
     """
-    # --- 1. 基础数据集加载与混合 (逻辑与 make_interleaved_dataset 相同) ---
+    # ... (权重计算逻辑保持不变) ...
     if not sample_weights:
         sample_weights = [1.0] * len(dataset_kwargs_list)
     
+    # 清洗参数，防止 chunking 冲突
+    traj_transform_kwargs = traj_transform_kwargs
+    for k in ["window_size", "action_horizon"]:
+        if k in traj_transform_kwargs:
+            del traj_transform_kwargs[k]
+
     dataset_sizes = []
     all_dataset_statistics = {}
     for dataset_kwargs in dataset_kwargs_list:
@@ -949,10 +937,10 @@ def make_sliding_window_dataset(
     if balance_weights:
         sample_weights = np.array(sample_weights) * np.array(dataset_sizes)
     sample_weights = np.array(sample_weights) / np.sum(sample_weights)
-    pprint_data_mixture(dataset_kwargs_list, sample_weights)
-
+    
     threads_per_dataset = allocate_threads(traj_transform_threads, sample_weights)
     reads_per_dataset = allocate_threads(traj_read_threads, sample_weights)
+    # ... (结束权重计算) ...
 
     datasets = []
     for dataset_kwargs, threads, reads in zip(
@@ -966,38 +954,43 @@ def make_sliding_window_dataset(
             dataset_statistics=all_dataset_statistics[dataset_kwargs["name"]],
         )
         
-        # --- 2. 轨迹级变换 ---
-        # 注意：这里不进行 chunking，保持完整轨迹，因为后面要自己做 slice
-        # 也不要在这里 filter 长度，任何长度的轨迹都是有用的
+        # 1. 轨迹变换 (不含 chunking)
         ds = apply_trajectory_transforms(
             ds,
             **traj_transform_kwargs,
+            window_size=1, 
+            action_horizon=1,
             train=train,
             num_parallel_calls=threads
         )
         
-        # --- 3. 核心修改：Flat Map 做滑动窗口切片 ---
-        # 这一步将 Dataset[Trajectory] 变成了 Dataset[Window]
-        # input: Trajectory (T, D)
-        # output: Multiple Windows (32, D)
-        ds = ds.flat_map(
-            partial(slice_and_pad_trajectory, window_size=window_size, stride=stride)
+        # 2. [核心] 向量化切片 (Vectorized Slice)
+        # 将一条轨迹 [T, ...] 映射为一个包含所有窗口的字典 [N, W, ...]
+        ds = ds.map(
+            partial(slice_and_pad_trajectory, window_size=window_size, stride=stride),
+            num_parallel_calls=threads
         )
+        
+        # 3. 解包 (Unbatch)
+        # 将 [N, W, ...] 拆解为 N 个 [W, ...] 的独立样本
+        ds = ds.unbatch()
         
         datasets.append(ds)
 
-    # --- 4. 混合与打乱 ---
-    # 现在 datasets 里的每个元素已经是长度为 32 的子轨迹了
     dataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
     
     if shuffle_buffer_size > 0:
         dataset = dataset.shuffle(shuffle_buffer_size)
 
-    # --- 5. 帧变换 (图像解码/Resize) ---
-    # 注意：apply_frame_transforms 会自动处理时间维度
-    dataset = apply_frame_transforms(dataset, **frame_transform_kwargs, train=train)
+    # 4. 帧级变换
+    # 此时每个 element 都是 [window_size, ...] 且具有静态 shape
+    # dl.vmap 可以完美运行
+    dataset = apply_frame_transforms(
+        dataset, 
+        **frame_transform_kwargs, 
+        train=train
+    )
 
-    # --- 6. Batch ---
     if batch_size is not None:
         dataset = dataset.batch(batch_size)
 

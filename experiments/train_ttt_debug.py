@@ -20,7 +20,7 @@ import wandb
 from jax.experimental.compilation_cache import compilation_cache
 import random
 
-from octo.data.dataset import make_interleaved_traj_dataset
+from octo.data.dataset import make_interleaved_traj_dataset, make_sliding_window_dataset
 from octo.data.oxe import make_oxe_dataset_kwargs_and_weights
 from octo.utils.train_callbacks import create_validation_dataset, create_validation_traj_dataset
 from octo.utils.train_utils import filter_eval_datasets
@@ -174,10 +174,9 @@ def main(_):
             # expanded = np.expand_dims(encoded, axis=1) # 插入 Time 维度
             # tiled_encoded = np.tile(expanded, (1, 120, 1)) 
             expanded = np.expand_dims(encoded, axis=1).astype(np.float32) 
-            tiled_encoded = np.broadcast_to(expanded, (expanded.shape[0], 120, *expanded.shape[2:]))
+            tiled_encoded = np.broadcast_to(expanded, (expanded.shape[0], 32, *expanded.shape[2:]))
             
             # print(f"Shape: {batch['goals']['language'].shape}")
-            # assert 0
             B, T = tiled_encoded.shape[:2]
             tiled_encoded = tiled_encoded.reshape((B * T,) + tiled_encoded.shape[2:])
             batch["goals"]["language"] = tiled_encoded
@@ -233,7 +232,7 @@ def main(_):
         oxe_kwargs = FLAGS.oxedata_config["oxe_kwargs"]
         del FLAGS.oxedata_config["oxe_kwargs"]
 
-    train_data = make_interleaved_traj_dataset(
+    train_data = make_sliding_window_dataset(
         **FLAGS.oxedata_config, train=True
     )
     # train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
@@ -269,23 +268,20 @@ def main(_):
             train=False
         )
         val_traj_data_fractal_iter = map(process_oxe_batch, val_data_fractal.shuffle(1000).repeat().iterator())
-        
-        val_data_fractal_multi_traj = create_validation_traj_dataset(
-            val_datasets_kwargs_list[0], 
-            FLAGS.oxedata_config["traj_transform_kwargs"],
-            FLAGS.oxedata_config["frame_transform_kwargs"],
-            train=False
+
+        val_data_fractal_iter = map(
+            shard_fn, map(process_oxe_batch, val_data_fractal.iterator())
         )
 
         val_data_fractal_iter = (
-                val_data_fractal_multi_traj
-                .shuffle(500)
+                val_data_fractal.unbatch()
+                .shuffle(1000)
                 .repeat()
                 .batch(FLAGS.oxedata_config.batch_size)
                 .iterator(prefetch=0)
         )
 
-        val_data_fractal_iter = map(shard_fn, map(process_oxe_traj_batch, val_data_fractal_iter))
+        val_data_fractal_iter = map(shard_fn, map(process_oxe_batch, val_data_fractal_iter))
         prev_val_traj_fractal = next(val_traj_data_fractal_iter)
 
     else:
@@ -305,23 +301,20 @@ def main(_):
         )
     
     val_traj_data_iter = map(process_oxe_batch, val_data.shuffle(1000).repeat().iterator())
-    
-    val_data_multi_traj = create_validation_traj_dataset(
-            val_datasets_kwargs_list[0], 
-            FLAGS.oxedata_config["traj_transform_kwargs"],
-            FLAGS.oxedata_config["frame_transform_kwargs"],
-            train=False
-        )
+
+    val_data_iter = map(
+        shard_fn, map(process_oxe_batch, val_data.iterator())
+    )
 
     val_data_iter = (
-            val_data_multi_traj
-            .shuffle(500)
+            val_data.unbatch()
+            .shuffle(1000)
             .repeat()
             .batch(FLAGS.oxedata_config.batch_size)
             .iterator(prefetch=0)
     )
 
-    val_data_iter = map(shard_fn, map(process_oxe_traj_batch, val_data_iter))
+    val_data_iter = map(shard_fn, map(process_oxe_batch, val_data_iter))
     prev_val_traj = next(val_traj_data_iter)
 
     train_data_iter = map(
