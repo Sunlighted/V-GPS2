@@ -176,9 +176,11 @@ def main(_):
             expanded = np.expand_dims(encoded, axis=1).astype(np.float32) 
             tiled_encoded = np.broadcast_to(expanded, (expanded.shape[0], 120, *expanded.shape[2:]))
             
-            batch["goals"]["language"] = tiled_encoded
             # print(f"Shape: {batch['goals']['language'].shape}")
             # assert 0
+            B, T = tiled_encoded.shape[:2]
+            tiled_encoded = tiled_encoded.reshape((B * T,) + tiled_encoded.shape[2:])
+            batch["goals"]["language"] = tiled_encoded
             
         return batch
 
@@ -202,16 +204,20 @@ def main(_):
         """
         Process a batch from the oxe dataset to be compatible with jaxrl_minimal
         """
+        B, T = batch["reward"].shape[:2]
+
+        def fold_bt(x):
+            return x.reshape((B * T,) + x.shape[2:])
         return process_traj_text(
             dict(
-                actions=batch["action"].squeeze(),
+                actions=fold_bt(batch["action"]).squeeze(),
                 goals=dict(language=batch["task"]["language_instruction"]),
-                mc_returns=batch["mc_return"],
-                observations=dict(image=batch["observation"]["image_primary"].squeeze()),
-                next_observations=dict(image=batch["next_observation"]["image_primary"].squeeze()),
-                rewards=batch["reward"],
-                masks=batch["td_mask"],
-                pad_masks=batch["pad_mask"],
+                mc_returns=fold_bt(batch["mc_return"]),
+                observations=dict(image=fold_bt(batch["observation"]["image_primary"]).squeeze()),
+                next_observations=dict(image=fold_bt(batch["next_observation"]["image_primary"]).squeeze()),
+                rewards=fold_bt(batch["reward"]),
+                masks=fold_bt(batch["td_mask"]),
+                pad_masks=fold_bt(batch["pad_mask"]),
             )
         )
 
@@ -323,23 +329,23 @@ def main(_):
     )
 
     example_batch = next(train_data_iter)
-    # def debug_print_shapes(data, indent=0):
-    #     for key, value in data.items():
-    #         print("  " * indent + f"[{key}]:", end=" ")
-    #         if isinstance(value, dict):
-    #             print() # 换行处理子字典
-    #             debug_print_shapes(value, indent + 1)
-    #         elif hasattr(value, "shape"):
-    #             # 打印形状和类型（方便区分是 CPU 的 NumPy 还是 TPU 的 DeviceArray）
-    #             print(f"{value.shape}  ({type(value).__name__})")
-    #         else:
-    #             print(f"{type(value)}")
+    def debug_print_shapes(data, indent=0):
+        for key, value in data.items():
+            print("  " * indent + f"[{key}]:", end=" ")
+            if isinstance(value, dict):
+                print() # 换行处理子字典
+                debug_print_shapes(value, indent + 1)
+            elif hasattr(value, "shape"):
+                # 打印形状和类型（方便区分是 CPU 的 NumPy 还是 TPU 的 DeviceArray）
+                print(f"{value.shape}  ({type(value).__name__})")
+            else:
+                print(f"{type(value)}")
 
-    # # 运行调试
-    # print("\n" + "="*40)
-    # print("DEBUG: BATCH SHAPES")
-    # debug_print_shapes(example_batch)
-    # print("="*40 + "\n")
+    # 运行调试
+    print("\n" + "="*40)
+    print("DEBUG: BATCH SHAPES")
+    debug_print_shapes(example_batch)
+    print("="*40 + "\n")
     logging.info(f"Batch size: {example_batch['observations']['image'].shape[0]}")
     logging.info(f"Trajectory length: {example_batch['observations']['image'].shape[1]}")
     logging.info(f"Number of devices: {num_devices}")
@@ -366,6 +372,8 @@ def main(_):
         logging.info("Restored agent from %s", FLAGS.config.resume_path)
 
     agent = jax.device_put(jax.tree_map(jnp.array, agent), sharding.replicate())
+    
+    print("Start training:")
 
     timer = Timer()
     for i in tqdm.tqdm(range(int(FLAGS.config.num_steps))):

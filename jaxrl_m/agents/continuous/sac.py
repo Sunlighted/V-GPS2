@@ -530,7 +530,7 @@ class SACAgent(flax.struct.PyTreeNode):
         early_goal_concat: bool,
         shared_goal_encoder: bool,
         language_conditioned: bool,
-        use_traj: bool,
+        use_traj: bool = False,
     ):
         if goal_conditioned and not language_conditioned:
             if early_goal_concat:

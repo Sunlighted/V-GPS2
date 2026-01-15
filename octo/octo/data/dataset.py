@@ -838,3 +838,172 @@ def make_interleaved_traj_dataset(
     dataset.sample_weights = sample_weights
 
     return dataset
+
+def slice_and_pad_trajectory(
+    traj: dict, 
+    window_size: int = 32, 
+    stride: int = 1
+) -> tf.data.Dataset:
+    """
+    将一条轨迹切分为多个重叠的子轨迹 (Windows)。
+    如果子轨迹长度不足 window_size，则进行补零 (Zero-Padding) 并生成 mask。
+    
+    Args:
+        traj: 包含 'action', 'observation', 'task' 等键的字典。
+              期望时间维度在第 0 维。
+        window_size: 目标输出的时间步长度 (Horizon)。
+        stride: 滑动窗口的步长。
+    """
+    # 获取当前轨迹的实际长度
+    traj_len = tf.shape(traj["action"])[0]
+    
+    # 计算需要生成多少个窗口
+    # 如果 traj_len < window_size，num_windows 为 1 (这种情况下我们取整个轨迹然后 padding)
+    # 如果 traj_len >= window_size，num_windows = traj_len - window_size + 1 (对于 stride=1)
+    num_windows = tf.maximum(1, (traj_len - window_size + stride) // stride)
+    
+    # 生成所有窗口的起始索引
+    starts = tf.range(0, num_windows * stride, stride)
+
+    def _get_window(start_idx):
+        # 计算当前切片的结束索引
+        end_idx = tf.minimum(start_idx + window_size, traj_len)
+        actual_len = end_idx - start_idx
+        
+        # 1. 切片逻辑 (Slicing)
+        def slice_tensor(x):
+            # 只有当 tensor 的第0维等于 traj_len 时才切片 (处理时间相关的 tensor)
+            # 比如 action, observation
+            if isinstance(x, tf.Tensor) and tf.rank(x) >= 1 and tf.shape(x)[0] == traj_len:
+                return x[start_idx:end_idx]
+            # 对于非时间相关的 (如 language_instruction), 保持原样
+            return x
+            
+        sub_traj = tf.nest.map_structure(slice_tensor, traj)
+        
+        # 2. 补齐逻辑 (Padding)
+        # 如果切出来的长度小于 window_size，说明是短轨迹，或者切到了尾部（视逻辑而定，这里主要是处理短轨迹）
+        pad_len = window_size - actual_len
+        
+        def pad_tensor(x):
+            # 只有当 tensor 的第0维等于 actual_len 时才补齐
+            if isinstance(x, tf.Tensor) and tf.rank(x) >= 1 and tf.shape(x)[0] == actual_len:
+                # 构造 padding 配置: [[0, pad_len], [0, 0], ...]
+                rank = tf.rank(x)
+                paddings = tf.concat(
+                    [[[0, pad_len]], tf.zeros((rank - 1, 2), dtype=tf.int32)], 
+                    axis=0
+                )
+                # 使用 0 进行填充 (Zero Padding)
+                # 注意：这里用 0 填充是安全的，因为我们会生成 mask
+                return tf.pad(x, paddings, mode="CONSTANT", constant_values=0)
+            return x
+
+        padded_traj = tf.nest.map_structure(pad_tensor, sub_traj)
+        
+        # 3. 生成 Mask
+        # 1 代表真实数据，0 代表填充数据
+        pad_mask = tf.concat([
+            tf.ones(actual_len, dtype=tf.bool),
+            tf.zeros(pad_len, dtype=tf.bool)
+        ], axis=0)
+        
+        padded_traj["pad_mask"] = pad_mask
+        
+        return padded_traj
+
+    # 将索引映射为实际的子轨迹数据
+    return tf.data.Dataset.from_tensor_slices(starts).map(_get_window)
+
+def make_sliding_window_dataset(
+    dataset_kwargs_list: Sequence[dict],
+    sample_weights: Optional[Sequence[float]] = None,
+    *,
+    train: bool,
+    shuffle_buffer_size: int,
+    window_size: int = 32,  # 你的 Horizon
+    stride: int = 1,        # 你的 Stride
+    traj_transform_kwargs: dict = {},
+    frame_transform_kwargs: dict = {},
+    batch_size: Optional[int] = None,
+    balance_weights: bool = False,
+    traj_transform_threads: Optional[int] = None,
+    traj_read_threads: Optional[int] = None,
+) -> dl.DLataset:
+    """
+    创建一个基于滑动窗口的数据集。
+    输入：原始 RLDS 轨迹。
+    输出：形状为 (window_size, ...) 的子轨迹 Batch。
+    """
+    # --- 1. 基础数据集加载与混合 (逻辑与 make_interleaved_dataset 相同) ---
+    if not sample_weights:
+        sample_weights = [1.0] * len(dataset_kwargs_list)
+    
+    dataset_sizes = []
+    all_dataset_statistics = {}
+    for dataset_kwargs in dataset_kwargs_list:
+        _, dataset_statistics = make_dataset_from_rlds(**dataset_kwargs, train=train)
+        dataset_sizes.append(dataset_statistics["num_transitions"])
+        all_dataset_statistics[dataset_kwargs["name"]] = dataset_statistics
+
+    if balance_weights:
+        sample_weights = np.array(sample_weights) * np.array(dataset_sizes)
+    sample_weights = np.array(sample_weights) / np.sum(sample_weights)
+    pprint_data_mixture(dataset_kwargs_list, sample_weights)
+
+    threads_per_dataset = allocate_threads(traj_transform_threads, sample_weights)
+    reads_per_dataset = allocate_threads(traj_read_threads, sample_weights)
+
+    datasets = []
+    for dataset_kwargs, threads, reads in zip(
+        dataset_kwargs_list, threads_per_dataset, reads_per_dataset
+    ):
+        ds, _ = make_dataset_from_rlds(
+            **dataset_kwargs,
+            train=train,
+            num_parallel_calls=threads,
+            num_parallel_reads=reads,
+            dataset_statistics=all_dataset_statistics[dataset_kwargs["name"]],
+        )
+        
+        # --- 2. 轨迹级变换 ---
+        # 注意：这里不进行 chunking，保持完整轨迹，因为后面要自己做 slice
+        # 也不要在这里 filter 长度，任何长度的轨迹都是有用的
+        ds = apply_trajectory_transforms(
+            ds,
+            **traj_transform_kwargs,
+            train=train,
+            num_parallel_calls=threads
+        )
+        
+        # --- 3. 核心修改：Flat Map 做滑动窗口切片 ---
+        # 这一步将 Dataset[Trajectory] 变成了 Dataset[Window]
+        # input: Trajectory (T, D)
+        # output: Multiple Windows (32, D)
+        ds = ds.flat_map(
+            partial(slice_and_pad_trajectory, window_size=window_size, stride=stride)
+        )
+        
+        datasets.append(ds)
+
+    # --- 4. 混合与打乱 ---
+    # 现在 datasets 里的每个元素已经是长度为 32 的子轨迹了
+    dataset = dl.DLataset.sample_from_datasets(datasets, sample_weights)
+    
+    if shuffle_buffer_size > 0:
+        dataset = dataset.shuffle(shuffle_buffer_size)
+
+    # --- 5. 帧变换 (图像解码/Resize) ---
+    # 注意：apply_frame_transforms 会自动处理时间维度
+    dataset = apply_frame_transforms(dataset, **frame_transform_kwargs, train=train)
+
+    # --- 6. Batch ---
+    if batch_size is not None:
+        dataset = dataset.batch(batch_size)
+
+    dataset = dataset.with_ram_budget(1)
+    dataset = dataset.ignore_errors(log_warning=True)
+    dataset.dataset_statistics = all_dataset_statistics
+    dataset.sample_weights = sample_weights
+
+    return dataset

@@ -1,17 +1,17 @@
 data_dir="gs://leaf-lab-bucket-0/OXE" # FILL IN
-save_dir="/home/chenyangcao/V-GPS/save" # FILL IN FILL IN
+save_dir="/home/chenyangcao/V-GPS/save" # FILL IN
 
 
 PROJECT=VGPS
-batch_size=512
+batch_size=4
 data_mix=bridge_fractal
 discount=0.98
 
-NAME=VGPS_CalQL_${data_mix}_b${batch_size}_both
+NAME=VGPS_CalQL_${data_mix}_b${batch_size}_debug
 
-python experiments/train.py \
-    --config experiments/configs/train_config.py:lc_cql \
-    --oxedata_config experiments/configs/data_config.py \
+python experiments/train_ttt_debug.py \
+    --config experiments/configs/train_config_debug.py:lc_cql \
+    --oxedata_config experiments/configs/data_config_ttte2e.py \
     --name $NAME \
     --project $PROJECT \
     --config.num_steps 500000 \

@@ -10,6 +10,7 @@ from .continuous.gc_ddpm_bc import GCDDPMBCAgent
 from .continuous.gc_iql import GCIQLAgent
 from .continuous.iql import IQLAgent
 from .continuous.sac import SACAgent
+from .continuous.cql_t import ContinuousCQLTAgent
 
 agents = {
     "gc_bc": GCBCAgent,
@@ -24,4 +25,5 @@ agents = {
     "cql_simsiam": CQLSimSiamAgent,
     "cql_ttt": CQLTTTPredictAgent,
     "cql_ttt_e2e": ContinuousCQLTTTAgent,
+    "cql_t": ContinuousCQLTAgent,
 }

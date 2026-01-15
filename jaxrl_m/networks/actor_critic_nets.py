@@ -61,7 +61,6 @@ class Critic(nn.Module):
     
 class Critic_sa_encoder(nn.Module):
     encoder_def: Optional[nn.Module]
-    s_encoder_def: Optional[nn.Module]
     a_encoder_def: Optional[nn.Module]
     sa_encoder_def: Optional[nn.Module]
     network_def: nn.Module
@@ -70,11 +69,6 @@ class Critic_sa_encoder(nn.Module):
 
     def setup(self):
         self.encoder = self.encoder_def
-        
-        if self.s_encoder_def is not None:
-            self.s_encoder = self.s_encoder_def
-        else:
-            self.s_encoder = None
 
         if self.a_encoder_def is not None:
             self.a_encoder = self.a_encoder_def
@@ -116,18 +110,13 @@ class Critic_sa_encoder(nn.Module):
                 obs_enc = obs_enc_values[0]
             else:
                 obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
-                
-        if self.s_encoder is not None:
-            s_enc = self.s_encoder(obs_enc)
-        else:
-            s_enc = obs_enc
 
         if self.a_encoder is not None:
             action_enc = self.a_encoder(actions)
         else:
             action_enc = actions
 
-        sa_enc = jnp.concatenate([s_enc, action_enc], -1)
+        sa_enc = jnp.concatenate([obs_enc, action_enc], -1)
         
         if self.sa_encoder is not None:
             inputs = self.sa_encoder(sa_enc)
@@ -159,13 +148,28 @@ class Critic_sa_encoder(nn.Module):
                 obs_enc = obs_enc_values[0]
             else:
                 obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
-                
-        if self.s_encoder is not None:
-            obs_enc = self.s_encoder(obs_enc)
-        else:
-            obs_enc = obs_enc
             
         return obs_enc
+    
+    def compute_q_from_embedding(
+        self, obs_enc: jnp.ndarray, actions: jnp.ndarray
+    ) -> jnp.ndarray:
+
+        if self.a_encoder is not None:
+            action_enc = self.a_encoder(actions)
+        else:
+            action_enc = actions
+
+        sa_enc = jnp.concatenate([obs_enc, action_enc], -1)
+        
+        if self.sa_encoder is not None:
+            inputs = self.sa_encoder(sa_enc)
+        else:
+            inputs = sa_enc
+            
+        critic_out = self.network(inputs, train=False)
+        value = self.critic_output_head(critic_out)
+        return jnp.squeeze(value, -1)
 
 class Dynamics_sa_encoder(nn.Module):
     encoder: Optional[nn.Module]
@@ -416,7 +420,7 @@ class Policyen(nn.Module):
             return TanhMultivariateNormalDiag(loc=means, scale_diag=stds)
         return distrax.MultivariateNormalDiag(loc=means, scale_diag=stds)
 
-    def __call__(self, observations: jnp.ndarray, temperature: float = 1.0, train: bool = False) -> distrax.Distribution:
+    def __call__(self, observations: jnp.ndarray, temperature: float = 1.0, train: bool = False, mode: str = "actor") -> distrax.Distribution:
         """
         完整流程：图像 -> 编码器 -> 动作分布。
         非 TTT 阶段或初始化时调用。
@@ -426,7 +430,10 @@ class Policyen(nn.Module):
         else:
             obs_enc = self.encoder(observations)
             
-        return self.forward_from_embedding(obs_enc, temperature, train)
+        if mode == "actor":
+            return self.forward_from_embedding(obs_enc, temperature, train)
+        elif mode == "encoder":
+            return obs_enc
 
 class Policy(nn.Module):
     encoder: Optional[nn.Module]
