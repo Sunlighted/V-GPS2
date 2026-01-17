@@ -187,6 +187,7 @@ def main(_):
         """
         Process a batch from the oxe dataset to be compatible with jaxrl_minimal
         """
+        pad_mask = np.ones_like(batch["td_mask"])
         return process_text(
             dict(
                 actions=batch["action"].squeeze(),
@@ -196,6 +197,7 @@ def main(_):
                 next_observations=dict(image=batch["next_observation"]["image_primary"].squeeze()),
                 rewards=batch["reward"],
                 masks=batch["td_mask"],
+                pad_masks=pad_mask
             )
         )
         
