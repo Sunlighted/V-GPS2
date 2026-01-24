@@ -1,7 +1,7 @@
 from .continuous.bc import BCAgent
 from .continuous.calql import CalQLAgent
 from .continuous.cql import ContinuousCQLAgent
-from .continuous.cqlfix import EmbeddingCQLAgent
+# from .continuous.cqlfix import EmbeddingCQLAgent
 from .continuous.cql_simsiam import CQLSimSiamAgent
 from .continuous.cql_ttt_predict import CQLTTTPredictAgent
 from .continuous.cql_ttt_e2e import ContinuousCQLTTTAgent
@@ -11,6 +11,7 @@ from .continuous.gc_iql import GCIQLAgent
 from .continuous.iql import IQLAgent
 from .continuous.sac import SACAgent
 from .continuous.cql_t import ContinuousCQLTAgent
+from .continuous.cqlfix_cross_attention import EmbeddingCQLAgent
 
 agents = {
     "gc_bc": GCBCAgent,

@@ -31,7 +31,7 @@ def apply_trajectory_transforms(
     window_size: int = 1,
     action_horizon: int = 1,
     subsample_length: Optional[int] = None,
-    skip_unlabeled: bool = False,
+    skip_unlabeled: bool = True,
     max_action: Optional[float] = None,
     max_proprio: Optional[float] = None,
     task_augment_strategy: Optional[str] = None,
@@ -39,6 +39,7 @@ def apply_trajectory_transforms(
     max_action_dim: Optional[int] = None,
     max_proprio_dim: Optional[int] = None,
     post_chunk_transforms: Sequence[ModuleSpec] = (),
+    max_traj_length: Optional[int] = 120,
     num_parallel_calls: int = tf.data.AUTOTUNE,
 ) -> dl.DLataset:
     """Applies common transforms that happen at a trajectory level. Such transforms are usually some sort of
@@ -84,6 +85,12 @@ def apply_trajectory_transforms(
             )
         dataset = dataset.filter(
             lambda x: tf.math.reduce_any(x["task"]["language_instruction"] != "")
+        )
+        
+    if max_traj_length is not None:
+        # 过滤掉 action 长度超过 max_traj_length 的轨迹
+        dataset = dataset.filter(
+            lambda x: tf.shape(x["action"])[0] <= max_traj_length
         )
 
     if max_action is not None:

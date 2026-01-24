@@ -14,7 +14,7 @@ python experiments/train_ttt_debug.py \
     --oxedata_config experiments/configs/data_config_ttte2e.py \
     --name $NAME \
     --project $PROJECT \
-    --config.num_steps 500000 \
+    --config.num_steps 30000 \
     --config.agent_kwargs.cql_alpha 5.0 \
     --config.agent_kwargs.use_calql=True \
     --config.save_dir $save_dir \

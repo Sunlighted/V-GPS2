@@ -128,54 +128,27 @@ def main(_):
         oxe_kwargs = FLAGS.oxedata_config["oxe_kwargs"]
         del FLAGS.oxedata_config["oxe_kwargs"]
     
-    # train_data = make_interleaved_dataset(
-    #     **FLAGS.oxedata_config, train=True
-    # )
-    train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
-        FLAGS.oxedata_config["dataset_kwargs_list"],
-        FLAGS.oxedata_config["sample_weights"],
-        ["bridge_dataset"],
-    )
-
     train_data = make_interleaved_dataset(
-        dataset_kwargs_list=train_datasets_kwargs_list,
-        sample_weights=train_sample_weights,
-        train=True,
-        shuffle_buffer_size=FLAGS.oxedata_config["shuffle_buffer_size"],
-        traj_transform_kwargs=FLAGS.oxedata_config["traj_transform_kwargs"],
-        frame_transform_kwargs=FLAGS.oxedata_config["frame_transform_kwargs"],
-        batch_size=FLAGS.oxedata_config["batch_size"],
-        balance_weights=FLAGS.oxedata_config.get("balance_weights", False),
-        traj_transform_threads=FLAGS.oxedata_config.get("traj_transform_threads", None),
-        traj_read_threads=FLAGS.oxedata_config.get("traj_read_threads", None),
+        **FLAGS.oxedata_config, train=True
     )
+    # train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
+    #     FLAGS.oxedata_config["dataset_kwargs_list"],
+    #     FLAGS.oxedata_config["sample_weights"],
+    #     ["bridge_dataset"],
+    # )
 
-    sim_cfg = FLAGS.oxedata_config.get("sim_data")
-    if sim_cfg and sim_cfg.get("enable", False):
-        if not sim_cfg.get("tfrecord_dir"):
-            raise ValueError("sim_data.enable=True but no tfrecord_dir was provided")
-        logging.info(
-            "Adding simulated dataset from %s with weight %.2f",
-            sim_cfg.get("tfrecord_dir"),
-            sim_cfg.get("sample_weight", 1.0),
-        )
-        sim_dataset = make_simulated_dataset(
-            sim_cfg["tfrecord_dir"],
-            train=True,
-            traj_transform_kwargs=FLAGS.oxedata_config["traj_transform_kwargs"],
-            frame_transform_kwargs=FLAGS.oxedata_config["frame_transform_kwargs"],
-            shuffle_buffer_size=FLAGS.oxedata_config["shuffle_buffer_size"],
-            batch_size=FLAGS.oxedata_config.get("batch_size"),
-            num_parallel_calls=sim_cfg.get("num_parallel_calls", tf.data.AUTOTUNE),
-            num_parallel_reads=sim_cfg.get("num_parallel_reads", tf.data.AUTOTUNE),
-        )
-        base_weight = 1.0
-        sim_weight = sim_cfg.get("sample_weight", 1.0)
-        weight_vec = np.array([base_weight, sim_weight], dtype=np.float32)
-        weight_vec /= np.sum(weight_vec)
-        train_data = dl.DLataset.sample_from_datasets(
-            [train_data, sim_dataset], weights=weight_vec
-        ).shuffle(FLAGS.oxedata_config["shuffle_buffer_size"])
+    # train_data = make_interleaved_dataset(
+    #     dataset_kwargs_list=train_datasets_kwargs_list,
+    #     sample_weights=train_sample_weights,
+    #     train=True,
+    #     shuffle_buffer_size=FLAGS.oxedata_config["shuffle_buffer_size"],
+    #     traj_transform_kwargs=FLAGS.oxedata_config["traj_transform_kwargs"],
+    #     frame_transform_kwargs=FLAGS.oxedata_config["frame_transform_kwargs"],
+    #     batch_size=FLAGS.oxedata_config["batch_size"],
+    #     balance_weights=FLAGS.oxedata_config.get("balance_weights", False),
+    #     traj_transform_threads=FLAGS.oxedata_config.get("traj_transform_threads", None),
+    #     traj_read_threads=FLAGS.oxedata_config.get("traj_read_threads", None),
+    # )
 
     if "fractal" in oxe_kwargs.data_mix or "oxe" in oxe_kwargs.data_mix or "rtx" in oxe_kwargs.data_mix:
         # Try filtering - this excludes fractal from validation datasets

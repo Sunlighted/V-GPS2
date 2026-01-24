@@ -187,55 +187,88 @@ class JaxRLTrainState(struct.PyTreeNode):
     def apply_loss_fns(
         self, loss_fns: Any, pmap_axis: str = None, has_aux: bool = False
     ) -> Union["JaxRLTrainState", Tuple["JaxRLTrainState", Any]]:
-        """
-        Convenience method to compute gradients based on `self.params` and apply
-        them using `apply_gradients`. `loss_fns` must have the same structure as
-        `txs`, and each leaf must be a function that takes two arguments:
-        `params` and `rng`.
-
-        This method automatically provides fresh rng to each loss function and
-        updates this train state's internal rng key.
-
-        Args:
-            loss_fns: loss function or pytree of loss functions with same
-                structure as `self.txs`. Each loss function must take `params`
-                as the first argument and `rng` as the second argument, and return
-                a scalar value.
-            pmap_axis: if not None, gradients (and optionally auxiliary values)
-                will be averaged over this axis
-            has_aux: if True, each `loss_fn` returns a tuple of (loss, aux) where
-                `aux` is a pytree of auxiliary values to be returned by this
-                method.
-
-        Returns:
-            If `has_aux` is True, returns a tuple of (new_train_state, aux).
-            Otherwise, returns the new train state.
-        """
-        # create a pytree of rngs with the same structure as `loss_fns`
+        # 1. 计算梯度
         treedef = jax.tree_util.tree_structure(loss_fns)
         new_rng, *rngs = jax.random.split(self.rng, treedef.num_leaves + 1)
         rngs = jax.tree_util.tree_unflatten(treedef, rngs)
 
-        # compute gradients
         grads_and_aux = jax.tree_map(
             lambda loss_fn, rng: jax.grad(loss_fn, has_aux=has_aux)(self.params, rng),
             loss_fns,
             rngs,
         )
 
-        # update rng state
         self = self.replace(rng=new_rng)
 
-        # average across devices if necessary
         if pmap_axis is not None:
             grads_and_aux = jax.lax.pmean(grads_and_aux, axis_name=pmap_axis)
 
+        # 2. 分离 Grads 和 Aux
         if has_aux:
             grads = jax.tree_map(lambda _, x: x[0], loss_fns, grads_and_aux)
             aux = jax.tree_map(lambda _, x: x[1], loss_fns, grads_and_aux)
+
+            # === 修改日志记录逻辑 ===
+            def _compute_grad_norm(grad_tree):
+                leaves = jax.tree_util.tree_leaves(grad_tree)
+                if not leaves: 
+                    return jnp.array(0.0)
+                return jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in leaves))
+            
+            def _compute_grad_norm_from_list(grad_list):
+                leaves = []
+                for g in grad_list: 
+                    leaves.extend(jax.tree_util.tree_leaves(g))
+                if not leaves: 
+                    return jnp.array(0.0)
+                return jnp.sqrt(sum(jnp.sum(jnp.square(g)) for g in leaves))
+
+            # 检测并处理 'combined' wrapper
+            grads_for_logging = grads
+            if "combined" in grads and len(grads) == 1:
+                # 解包用于日志记录
+                from flax.core import FrozenDict, unfreeze
+                inner_grads = grads["combined"]
+                if isinstance(inner_grads, FrozenDict):
+                    inner_grads = unfreeze(inner_grads)
+                grads_for_logging = inner_grads
+
+            # 记录梯度范数（使用解包后的结构）
+            for name, grad in grads_for_logging.items():
+                aux[f"grad_norm/{name}"] = _compute_grad_norm(grad)
+                
+                # Per-module gradient norms
+                flat_grad = flax.traverse_util.flatten_dict(grad, sep="/")
+                
+                # 针对不同模块记录详细的梯度范数
+                for module in ["actor", "critic", "temperature"]:
+                    module_grads = [
+                        v for k, v in flat_grad.items()
+                        if f"modules_{module}" in k
+                    ]
+                    if module_grads:
+                        aux[f"grad_norm/{name}.{module}"] = _compute_grad_norm_from_list(
+                            module_grads
+                        )
+                
+                # 如果有 encoder，也记录其梯度范数
+                encoder_grads = [
+                    v for k, v in flat_grad.items()
+                    if "encoder" in k
+                ]
+                if encoder_grads:
+                    aux[f"grad_norm/{name}.encoder"] = _compute_grad_norm_from_list(
+                        encoder_grads
+                    )
+        else:
+            grads = grads_and_aux
+            aux = {}
+
+        # === 关键：保持原始的 {'combined': ...} 结构传给 apply_gradients ===
+        if has_aux:
             return self.apply_gradients(grads=grads), aux
         else:
-            return self.apply_gradients(grads=grads_and_aux)
+            return self.apply_gradients(grads=grads)
 
     def update_batch_stats(self, new_batch_stats: Any) -> "JaxRLTrainState":
         """

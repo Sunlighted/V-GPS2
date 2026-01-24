@@ -26,6 +26,8 @@ def get_dataset_config(window_size=1):
             action_horizon=1,
             goal_relabeling_strategy="uniform",
             subsample_length=100,
+            skip_unlabeled=True,
+            max_traj_length=120,
             **task_augmentation,
         ),
         "frame_transform_kwargs": dict(

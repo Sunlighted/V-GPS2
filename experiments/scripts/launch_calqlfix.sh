@@ -1,15 +1,15 @@
-export HF_HOME=/data/huggingface_cache
+export HF_HOME=/home/chenyangcao/huggingface_cache
 
-data_dir=/data/Chenyang/OXE_download # FILL IN
-save_dir=/data/Chenyang/value_learning/V-GPS/save # FILL IN
+data_dir="gs://leaf-lab-bucket-0/OXE" # FILL IN
+save_dir="/home/chenyangcao/V-GPS/save" # FILL IN
 
 
 PROJECT=VGPS
-batch_size=256
+batch_size=512
 data_mix=bridge_fractal
 discount=0.98
 
-NAME=VGPS_CalQLFIX_${data_mix}_b${batch_size}_only-bridge
+NAME=VGPS_CalQLFIX_${data_mix}_b${batch_size}_skip_unlabelled_cross_attention
 
 python experiments/train_embedding.py \
     --config experiments/configs/train_config.py:lc_cqlfix \

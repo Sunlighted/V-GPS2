@@ -332,6 +332,162 @@ class SACAgent(flax.struct.PyTreeNode):
             "temperature": partial(self.temperature_loss_fn, batch),
         }
 
+    # @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
+    # def update(
+    #     self,
+    #     batch: Batch,
+    #     *,
+    #     pmap_axis: str = None,
+    #     networks_to_update: frozenset[str] = frozenset(
+    #         {"actor", "critic", "temperature"}
+    #     ),
+    # ) -> Tuple["SACAgent", dict]:
+        
+    #     accum_steps = self.config.get("accum_steps", 16) 
+    #     batch_size = batch["rewards"].shape[0]
+        
+    #     # --- 梯度累积逻辑 ---
+    #     if accum_steps > 1:
+    #         # 1. 检查 Batch Size 是否能整除
+    #         if batch_size % accum_steps != 0:
+    #             # 如果不能整除，为了安全起见，回退到 steps=1 或者报错
+    #             # 这里我们简单地切掉多余的数据
+    #             new_bs = (batch_size // accum_steps) * accum_steps
+    #             batch = jax.tree_map(lambda x: x[:new_bs], batch)
+    #             batch_size = new_bs
+
+    #         micro_batch_size = batch_size // accum_steps
+
+    #         # 2. Reshape Batch: [B, ...] -> [Steps, Micro_B, ...]
+    #         # jax.lax.scan 将在维度 0 (Steps) 上循环
+    #         reshaped_batch = jax.tree_map(
+    #             lambda x: x.reshape((accum_steps, micro_batch_size) + x.shape[1:]),
+    #             batch
+    #         )
+            
+    #         # 3. 准备随机数
+    #         rng, goal_rng = jax.random.split(self.state.rng)
+    #         # 为每个 micro-step 准备一个 rng
+    #         scan_rngs = jax.random.split(goal_rng, accum_steps)
+
+    #         def calculate_step_grads_and_info(params, micro_batch, step_rng):
+    #             # Goal Condition 处理
+    #             if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
+    #                 step_rng, neg_goal_rng = jax.random.split(step_rng)
+    #                 new_stats, _ = self._sample_negative_goals(micro_batch, neg_goal_rng)
+    #                 for k, v in new_stats.items():
+    #                     micro_batch[k] = v
+                
+    #             current_loss_fns = self.loss_fns(micro_batch)
+                
+    #             step_grads = {}
+    #             step_infos = {}
+
+    #             for key in networks_to_update:
+    #                 if key not in current_loss_fns: continue
+    #                 loss_fn = current_loss_fns[key]
+    #                 grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+    #                 # 计算梯度
+    #                 (loss, aux), grad = grad_fn(params, step_rng)
+                    
+    #                 step_grads[key] = grad
+    #                 step_infos[key] = aux
+                
+    #             return step_grads, step_infos
+
+    #         # 4. 使用 jax.eval_shape 推导结构
+    #         # 我们拿 reshaped_batch 的第一个切片做“假输入”
+    #         sample_micro_batch = jax.tree_map(lambda x: x[0], reshaped_batch)
+    #         sample_rng = scan_rngs[0]
+
+    #         # 这里的 shape_template 包含了 {'actor': params_tree, 'critic': params_tree}
+    #         grad_structure, info_structure = jax.eval_shape(
+    #             calculate_step_grads_and_info, 
+    #             self.state.params, 
+    #             sample_micro_batch, 
+    #             sample_rng
+    #         )
+
+    #         # 5. 正确初始化累积容器 (使用推导出的结构创建全0)
+    #         init_grads = jax.tree_map(jnp.zeros_like, grad_structure)
+    #         init_info = jax.tree_map(jnp.zeros_like, info_structure)
+
+    #         # 6. 定义 Scan 的 Step 函数
+    #         def update_step(carry, scan_input):
+    #             accum_grads, accum_info = carry
+    #             micro_batch_in, rng_in = scan_input # input from scan loop
+
+    #             # 调用核心计算逻辑
+    #             new_grads, new_infos = calculate_step_grads_and_info(
+    #                 self.state.params, micro_batch_in, rng_in
+    #             )
+
+    #             # 累加梯度 (结构完全一致，可以直接 tree_map 相加)
+    #             final_grads = jax.tree_map(lambda x, y: x + y, accum_grads, new_grads)
+    #             final_infos = jax.tree_map(lambda x, y: x + y, accum_info, new_infos)
+                
+    #             return (final_grads, final_infos), None
+
+    #         # 6. 执行 Scan
+    #         (avg_grads, summed_info), _ = jax.lax.scan(
+    #             update_step, 
+    #             (init_grads, init_info), 
+    #             (reshaped_batch, scan_rngs)
+    #         )
+
+    #         # 7. 平均梯度和 Info
+    #         avg_grads = jax.tree_map(lambda x: x / accum_steps if x is not None else None, avg_grads)
+    #         # Info 也要平均
+    #         info = jax.tree_map(lambda x: x / accum_steps, summed_info)
+            
+    #         # 8. 应用更新
+    #         # 假设 state 有 apply_gradients 方法
+    #         new_state = self.state.apply_gradients(grads=avg_grads)
+
+    #     else:
+    #         # --- 原有的普通更新逻辑 (accum_steps=1) ---
+    #         chex.assert_tree_shape_prefix(batch, (batch_size,))
+
+    #         rng, goal_rng = jax.random.split(self.state.rng)
+    #         if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
+    #             new_stats, _neg_goal_masks = self._sample_negative_goals(batch, goal_rng)
+    #             for k, v in new_stats.items():
+    #                 batch[k] = v
+
+    #         loss_fns = self.loss_fns(batch)
+
+    #         assert networks_to_update.issubset(
+    #             loss_fns.keys()
+    #         ), f"Invalid gradient steps: {networks_to_update}"
+            
+    #         # 把不需要更新的 loss 设为 0
+    #         for key in loss_fns.keys() - networks_to_update:
+    #             loss_fns[key] = lambda params, rng: (0.0, {})
+
+    #         # 使用 apply_loss_fns (内部包含 gradients 计算和 apply)
+    #         new_state, info = self.state.apply_loss_fns(
+    #             loss_fns, pmap_axis=pmap_axis, has_aux=True
+    #         )
+
+    #     # --- 公共后续处理 ---
+        
+    #     # Update target network (if requested)
+    #     if "critic" in networks_to_update:
+    #         new_state = new_state.target_update(self.config["soft_target_update_rate"])
+
+    #     # Update RNG
+    #     new_state = new_state.replace(rng=rng)
+
+    #     # Log learning rates
+    #     for name, opt_state in new_state.opt_states.items():
+    #         if (
+    #             hasattr(opt_state, "hyperparams")
+    #             and "learning_rate" in opt_state.hyperparams.keys()
+    #         ):
+    #             info[f"{name}_lr"] = opt_state.hyperparams["learning_rate"]
+
+    #     return self.replace(state=new_state), info
+    
     @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
     def update(
         self,
@@ -342,134 +498,43 @@ class SACAgent(flax.struct.PyTreeNode):
             {"actor", "critic", "temperature"}
         ),
     ) -> Tuple["SACAgent", dict]:
-        
-        accum_steps = self.config.get("accum_steps", 16) 
+        """
+        Take one gradient step on all (or a subset) of the networks in the agent.
+
+        Parameters:
+            batch: Batch of data to use for the update. Should have keys:
+                "observations", "actions", "next_observations", "rewards", "masks".
+            pmap_axis: Axis to use for pmap (if None, no pmap is used).
+            networks_to_update: Names of networks to update (default: all networks).
+                For example, in high-UTD settings it's common to update the critic
+                many times and only update the actor (and other networks) once.
+        Returns:
+            Tuple of (new agent, info dict).
+        """
         batch_size = batch["rewards"].shape[0]
-        
-        # --- 梯度累积逻辑 ---
-        if accum_steps > 1:
-            # 1. 检查 Batch Size 是否能整除
-            if batch_size % accum_steps != 0:
-                # 如果不能整除，为了安全起见，回退到 steps=1 或者报错
-                # 这里我们简单地切掉多余的数据
-                new_bs = (batch_size // accum_steps) * accum_steps
-                batch = jax.tree_map(lambda x: x[:new_bs], batch)
-                batch_size = new_bs
+        chex.assert_tree_shape_prefix(batch, (batch_size,))
 
-            micro_batch_size = batch_size // accum_steps
+        rng, goal_rng = jax.random.split(self.state.rng)
+        if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
+            new_stats, _neg_goal_masks = self._sample_negative_goals(batch, goal_rng)
+            # save the new goals and rewards
+            for k, v in new_stats.items():
+                batch[k] = v
 
-            # 2. Reshape Batch: [B, ...] -> [Steps, Micro_B, ...]
-            # jax.lax.scan 将在维度 0 (Steps) 上循环
-            reshaped_batch = jax.tree_map(
-                lambda x: x.reshape((accum_steps, micro_batch_size) + x.shape[1:]),
-                batch
-            )
-            
-            # 3. 准备随机数
-            rng, goal_rng = jax.random.split(self.state.rng)
-            # 为每个 micro-step 准备一个 rng
-            scan_rngs = jax.random.split(goal_rng, accum_steps)
+        # Compute gradients and update params
+        loss_fns = self.loss_fns(batch)
 
-            # 4. 定义单步梯度计算函数 (Micro-Step)
-            def update_step(carry, scan_input):
-                accum_grads, accum_info = carry
-                micro_batch, step_rng = scan_input
+        # Only compute gradients for specified steps
+        assert networks_to_update.issubset(
+            loss_fns.keys()
+        ), f"Invalid gradient steps: {networks_to_update}"
+        for key in loss_fns.keys() - networks_to_update:
+            loss_fns[key] = lambda params, rng: (0.0, {})
 
-                # 处理 Goal Condition (如果需要)
-                if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
-                    step_rng, neg_goal_rng = jax.random.split(step_rng)
-                    new_stats, _ = self._sample_negative_goals(micro_batch, neg_goal_rng)
-                    for k, v in new_stats.items():
-                        micro_batch[k] = v
+        new_state, info = self.state.apply_loss_fns(
+            loss_fns, pmap_axis=pmap_axis, has_aux=True
+        )
 
-                # 获取针对当前 micro_batch 的 loss functions
-                # 注意：这里调用 self.loss_fns(micro_batch) 会返回绑定了当前数据的函数
-                current_loss_fns = self.loss_fns(micro_batch)
-
-                # 计算梯度
-                new_grads = {}
-                new_infos = {}
-                
-                # 遍历需要更新的网络
-                for key in networks_to_update:
-                    if key not in current_loss_fns: continue
-                    
-                    loss_fn = current_loss_fns[key]
-                    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
-                    
-                    # 计算 loss 和 grad
-                    # 注意：我们使用 self.state.params 因为参数在累积过程中不更新
-                    (loss, aux), grad = grad_fn(self.state.params, step_rng)
-                    
-                    new_grads[key] = grad
-                    new_infos[key] = aux
-
-                # 累加梯度
-                # 如果是第一步 (accum_grads 为空)，直接使用 new_grads
-                # 否则将 new_grads 加到 accum_grads 上
-                def sum_grads(g1, g2):
-                    if g1 is None: return g2
-                    return g1 + g2
-                
-                final_grads = jax.tree_map(sum_grads, accum_grads, new_grads)
-                
-                # 累积 Info (用于日志，简单的求和，最后再平均)
-                def sum_info(i1, i2):
-                    if i1 is None: return i2
-                    return i1 + i2
-                final_infos = jax.tree_map(sum_info, accum_info, new_infos)
-                
-                return (final_grads, final_infos), None
-
-            # 5. 初始化累积容器
-            # 这里的结构需要匹配 gradients 的结构，最简单的方法是用 None 占位，
-            # 在 update_step 内部处理 None 的情况
-            init_grads = jax.tree_map(lambda x: None, self.state.params) # 或者是空字典 {}
-            init_info = {} 
-
-            # 6. 执行 Scan
-            (avg_grads, summed_info), _ = jax.lax.scan(
-                update_step, 
-                (init_grads, init_info), 
-                (reshaped_batch, scan_rngs)
-            )
-
-            # 7. 平均梯度和 Info
-            avg_grads = jax.tree_map(lambda x: x / accum_steps if x is not None else None, avg_grads)
-            # Info 也要平均
-            info = jax.tree_map(lambda x: x / accum_steps, summed_info)
-            
-            # 8. 应用更新
-            # 假设 state 有 apply_gradients 方法
-            new_state = self.state.apply_gradients(grads=avg_grads)
-
-        else:
-            # --- 原有的普通更新逻辑 (accum_steps=1) ---
-            chex.assert_tree_shape_prefix(batch, (batch_size,))
-
-            rng, goal_rng = jax.random.split(self.state.rng)
-            if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
-                new_stats, _neg_goal_masks = self._sample_negative_goals(batch, goal_rng)
-                for k, v in new_stats.items():
-                    batch[k] = v
-
-            loss_fns = self.loss_fns(batch)
-
-            assert networks_to_update.issubset(
-                loss_fns.keys()
-            ), f"Invalid gradient steps: {networks_to_update}"
-            
-            # 把不需要更新的 loss 设为 0
-            for key in loss_fns.keys() - networks_to_update:
-                loss_fns[key] = lambda params, rng: (0.0, {})
-
-            # 使用 apply_loss_fns (内部包含 gradients 计算和 apply)
-            new_state, info = self.state.apply_loss_fns(
-                loss_fns, pmap_axis=pmap_axis, has_aux=True
-            )
-
-        # --- 公共后续处理 ---
-        
         # Update target network (if requested)
         if "critic" in networks_to_update:
             new_state = new_state.target_update(self.config["soft_target_update_rate"])

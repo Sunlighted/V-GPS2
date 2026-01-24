@@ -237,6 +237,10 @@ def main(_):
     train_data = make_sliding_window_dataset(
         **FLAGS.oxedata_config, train=True
     )
+    FLAGS.oxedata_config["batch_size"] = 16
+    train_data_example = make_sliding_window_dataset(
+        **FLAGS.oxedata_config, train=True
+    )
     # train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
     #     FLAGS.oxedata_config["dataset_kwargs_list"],
     #     FLAGS.oxedata_config["sample_weights"],
@@ -322,8 +326,12 @@ def main(_):
     train_data_iter = map(
         shard_fn, map(process_oxe_traj_batch, train_data.iterator(prefetch=0))
     )
+    
+    train_data_example_iter = map(
+        shard_fn, map(process_oxe_traj_batch, train_data_example.iterator(prefetch=0))
+    )
 
-    example_batch = next(train_data_iter)
+    example_batch = next(train_data_example_iter)
     def debug_print_shapes(data, indent=0):
         for key, value in data.items():
             print("  " * indent + f"[{key}]:", end=" ")

@@ -100,11 +100,15 @@ def get_config(config_string):
                         tanh_squash_distribution=True,
                         std_parameterization="exp",
                     ),
-                    actor_optimizer_kwargs = dict(
-                        learning_rate=1e-4,
-                        warmup_steps=2000,
-                    ),
-                    critic_optimizer_kwargs = dict(
+                    # actor_optimizer_kwargs = dict(
+                    #     learning_rate=1e-4,
+                    #     warmup_steps=2000,
+                    # ),
+                    # critic_optimizer_kwargs = dict(
+                    #     learning_rate=3e-4,
+                    #     warmup_steps=2000,
+                    # ),
+                    optimizer_kwargs = dict(
                         learning_rate=3e-4,
                         warmup_steps=2000,
                     ),

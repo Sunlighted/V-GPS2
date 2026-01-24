@@ -59,6 +59,76 @@ class Critic(nn.Module):
             value = nn.Dense(1, kernel_init=default_init())(outputs)
         return jnp.squeeze(value, -1)
     
+class Critic_e(nn.Module):
+    encoder: Optional[nn.Module]
+    network: nn.Module
+    action_encoder: nn.Module
+    state_action_encoder: nn.Module
+    init_final: Optional[float] = None
+
+    @nn.compact
+    def __call__(
+        self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+        
+        if self.action_encoder is not None:
+            action_enc = self.action_encoder(actions)
+        else:
+            action_enc = actions
+        
+        if self.state_action_encoder is not None:
+            obs_enc = self.state_action_encoder(jnp.concatenate([obs_enc, action_enc], -1))
+            inputs = obs_enc
+        else:
+            inputs = jnp.concatenate([obs_enc, actions], -1)
+
+        # inputs = jnp.concatenate([obs_enc, actions], -1)
+        outputs = self.network(inputs, train=train)
+        if self.init_final is not None:
+            value = nn.Dense(
+                1,
+                kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
+            )(outputs)
+        else:
+            value = nn.Dense(1, kernel_init=default_init())(outputs)
+        return jnp.squeeze(value, -1)
+    
+class Critic_cross_attention(nn.Module):
+    encoder: Optional[nn.Module]
+    network: nn.Module
+    state_action_encoder: nn.Module
+    init_final: Optional[float] = None
+
+    @nn.compact
+    def __call__(
+        self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+        
+        if self.state_action_encoder is not None:
+            obs_enc = self.state_action_encoder(obs_enc, actions)
+            inputs = obs_enc
+        else:
+            inputs = jnp.concatenate([obs_enc, actions], -1)
+
+        # inputs = jnp.concatenate([obs_enc, actions], -1)
+        outputs = self.network(inputs, train=train)
+        if self.init_final is not None:
+            value = nn.Dense(
+                1,
+                kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
+            )(outputs)
+        else:
+            value = nn.Dense(1, kernel_init=default_init())(outputs)
+        return jnp.squeeze(value, -1)
+
 class Critic_sa_encoder(nn.Module):
     encoder_def: Optional[nn.Module]
     a_encoder_def: Optional[nn.Module]
@@ -461,6 +531,9 @@ class Policy(nn.Module):
                 obs_enc = obs_enc_values[0]
             else:
                 obs_enc = jnp.concatenate(obs_enc_values, axis=-1)
+                
+        if len(obs_enc.shape) > 3:
+            obs_enc = obs_enc.squeeze()
 
         outputs = self.network(obs_enc, train=train)
 
