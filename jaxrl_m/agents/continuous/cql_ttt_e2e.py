@@ -26,6 +26,22 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_agg import FigureCanvasAgg as FigureCanvas
 
+def manual_linear_grad(x, target, weights, bias):
+    """
+    手动计算线性层的梯度 (针对 MSE 损失)
+    x: (1, D_in)
+    target: (1, D_out)
+    """
+    # Forward
+    out = jnp.dot(x, weights) + bias
+    diff = out - target  # (1, D_out)
+    
+    # Gradients
+    grad_w = jnp.dot(x.T, diff)  # (D_in, D_out)
+    grad_b = jnp.sum(diff, axis=0) # (D_out,)
+    
+    return grad_w, grad_b, out
+
 class ContinuousCQLTTTAgent(SACAgent):
     def _sample_negative_goals(self, batch, rng):
         """

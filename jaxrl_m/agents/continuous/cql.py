@@ -18,7 +18,7 @@ from jaxrl_m.agents.continuous.sac import SACAgent
 from jaxrl_m.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from jaxrl_m.common.optimizers import make_optimizer
 from jaxrl_m.common.typing import *
-from jaxrl_m.networks.actor_critic_nets import Critic, Policy, ensemblize
+from jaxrl_m.networks.actor_critic_nets import Critic, Critic_e, Policy, ensemblize
 from jaxrl_m.networks.lagrange import GeqLagrangeMultiplier, LeqLagrangeMultiplier
 from jaxrl_m.networks.mlp import MLP, Scalar
 import matplotlib
@@ -956,6 +956,16 @@ class ContinuousCQLAgent(SACAgent):
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
         },
+        action_encoder_kwargs: dict = {
+            "hidden_dims": [256],
+            "activate_final": True,
+            "use_layer_norm": False,
+        },
+        state_action_encoder_kwargs: dict = {
+            "hidden_dims": [512, 512],
+            "activate_final": True,
+            "use_layer_norm": True,
+        },
         # goals
         goals: Optional[Data] = None,
         early_goal_concat: bool = False,
@@ -1003,7 +1013,8 @@ class ContinuousCQLAgent(SACAgent):
             name="critic_ensemble"
         )
         critic_def = partial(
-            Critic, encoder=encoders["critic"], network=critic_backbone
+            Critic_e, encoder=encoders["critic"], network=critic_backbone,
+            action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
         )(name="critic")
         temperature_def = GeqLagrangeMultiplier(
             init_value=config.temperature_init,

@@ -184,3 +184,28 @@ OXE_NAMED_MIXES = {
     "fractal": FRACTAL_MIX,
     "bridge_fractal": BRIDGE_FRACTAL_MIX,
 }
+
+
+# ============================================================================
+# Embedding Dataset Mixes
+# ============================================================================
+# These mixes use pre-computed Octo embeddings instead of raw images.
+# See octo/data/embedding_dataset.py for the loader.
+
+BRIDGE_EMBEDDING_MIX = [
+    ("bridge_dataset_embedding", 1.0),
+]
+
+FRACTAL_EMBEDDING_MIX = [
+    ("fractal20220817_data_embedding", 1.0),
+]
+
+BRIDGE_FRACTAL_EMBEDDING_MIX = [
+    ("bridge_dataset_embedding", 1.0),
+    ("fractal20220817_data_embedding", 0.54087122203),
+]
+
+# Add embedding mixes to named mixes
+OXE_NAMED_MIXES["bridge_embedding"] = BRIDGE_EMBEDDING_MIX
+OXE_NAMED_MIXES["fractal_embedding"] = FRACTAL_EMBEDDING_MIX
+OXE_NAMED_MIXES["bridge_fractal_embedding"] = BRIDGE_FRACTAL_EMBEDDING_MIX

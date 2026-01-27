@@ -128,27 +128,27 @@ def main(_):
         oxe_kwargs = FLAGS.oxedata_config["oxe_kwargs"]
         del FLAGS.oxedata_config["oxe_kwargs"]
     
-    # train_data = make_interleaved_dataset(
-    #     **FLAGS.oxedata_config, train=True
-    # )
-    train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
-        FLAGS.oxedata_config["dataset_kwargs_list"],
-        FLAGS.oxedata_config["sample_weights"],
-        ["bridge_dataset"],
-    )
-
     train_data = make_interleaved_dataset(
-        dataset_kwargs_list=train_datasets_kwargs_list,
-        sample_weights=train_sample_weights,
-        train=True,
-        shuffle_buffer_size=FLAGS.oxedata_config["shuffle_buffer_size"],
-        traj_transform_kwargs=FLAGS.oxedata_config["traj_transform_kwargs"],
-        frame_transform_kwargs=FLAGS.oxedata_config["frame_transform_kwargs"],
-        batch_size=FLAGS.oxedata_config["batch_size"],
-        balance_weights=FLAGS.oxedata_config.get("balance_weights", False),
-        traj_transform_threads=FLAGS.oxedata_config.get("traj_transform_threads", None),
-        traj_read_threads=FLAGS.oxedata_config.get("traj_read_threads", None),
+        **FLAGS.oxedata_config, train=True
     )
+    # train_datasets_kwargs_list, train_sample_weights = filter_eval_datasets(
+    #     FLAGS.oxedata_config["dataset_kwargs_list"],
+    #     FLAGS.oxedata_config["sample_weights"],
+    #     ["bridge_dataset"],
+    # )
+
+    # train_data = make_interleaved_dataset(
+    #     dataset_kwargs_list=train_datasets_kwargs_list,
+    #     sample_weights=train_sample_weights,
+    #     train=True,
+    #     shuffle_buffer_size=FLAGS.oxedata_config["shuffle_buffer_size"],
+    #     traj_transform_kwargs=FLAGS.oxedata_config["traj_transform_kwargs"],
+    #     frame_transform_kwargs=FLAGS.oxedata_config["frame_transform_kwargs"],
+    #     batch_size=FLAGS.oxedata_config["batch_size"],
+    #     balance_weights=FLAGS.oxedata_config.get("balance_weights", False),
+    #     traj_transform_threads=FLAGS.oxedata_config.get("traj_transform_threads", None),
+    #     traj_read_threads=FLAGS.oxedata_config.get("traj_read_threads", None),
+    # )
 
     sim_cfg = FLAGS.oxedata_config.get("sim_data")
     if sim_cfg and sim_cfg.get("enable", False):

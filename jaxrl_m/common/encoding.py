@@ -258,7 +258,8 @@ class PrecomputedFeatureEncodingWrapper(nn.Module):
 
     stop_gradient: bool = True
 
-    def __call__(self, observations: Dict[str, jnp.ndarray]) -> jnp.ndarray:
+    def __call__(self, observations_and_goals: Tuple[Dict[str, jnp.ndarray], Dict[str, jnp.ndarray]]) -> jnp.ndarray:
+        observations, goals = observations_and_goals
         feats = observations["image"]
         if feats.ndim > 2:
             feats = feats.reshape(feats.shape[0], -1)

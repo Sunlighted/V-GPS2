@@ -2,6 +2,7 @@ from .continuous.bc import BCAgent
 from .continuous.calql import CalQLAgent
 from .continuous.cql import ContinuousCQLAgent
 from .continuous.cqlfix import EmbeddingCQLAgent
+from .continuous.cqlfix_ca import EmbeddingCQLCrossAttenAgent
 from .continuous.cql_simsiam import CQLSimSiamAgent
 from .continuous.cql_ttt_predict import CQLTTTPredictAgent
 from .continuous.cql_ttt_e2e import ContinuousCQLTTTAgent
@@ -19,6 +20,7 @@ agents = {
     "iql": IQLAgent,
     "cql": ContinuousCQLAgent,
     "cqlfix": EmbeddingCQLAgent,
+    "cqlfix_ca": EmbeddingCQLCrossAttenAgent,
     "calql": CalQLAgent,
     "sac": SACAgent,
     "cql_simsiam": CQLSimSiamAgent,

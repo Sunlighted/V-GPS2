@@ -1,4 +1,4 @@
-export CUDA_VISIBLE_DEVICES=4
+export CUDA_VISIBLE_DEVICES=1
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 model_name=octo-small
@@ -13,16 +13,20 @@ model_name=octo-small
 # 'google_robot_place_in_closed_bottom_drawer', 'google_robot_place_apple_in_closed_top_drawer', 'widowx_spoon_on_towel', 
 # 'widowx_carrot_on_plate', 'widowx_stack_cube', 'widowx_put_eggplant_in_basket'
 
-for task_name in widowx_put_eggplant_in_basket widowx_spoon_on_towel widowx_carrot_on_plate widowx_stack_cube google_robot_move_near google_robot_pick_coke_can
-do
-python experiments/eval_vgps.py \
---seed=0 \
---model_name=$model_name \
---task_name=$task_name \
---use_vgps=True \
---vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_only-bridge_20251125_210541/checkpoint_500000" \
---num_samples=50 \
---action_temp=1.0 \
---num_eval_episodes=100 \
---pretrain_method_name="vgpsfix"
+for task_name in google_robot_move_near google_robot_close_top_drawer # widowx_put_eggplant_in_basket widowx_spoon_on_towel widowx_carrot_on_plate widowx_stack_cube google_robot_pick_coke_can google_robot_move_near google_robot_close_top_drawer # google_robot_open_top_drawer
+    do
+    for seed in 0 1 2 3 4
+        do
+        python experiments/eval_vgps.py \
+        --seed=$seed \
+        --model_name=$model_name \
+        --task_name=$task_name \
+        --use_vgps=True \
+        --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_octo-small_20251121_151543/checkpoint_500000" \
+        --num_samples=50 \
+        --action_temp=1.0 \
+        --add_actions=False \
+        --num_eval_episodes=100 \
+        --pretrain_method_name="vgpsfix"
+    done
 done

@@ -2,15 +2,15 @@
 set -euo pipefail
 
 # 环境变量
-export CUDA_VISIBLE_DEVICES=3
+export CUDA_VISIBLE_DEVICES=1
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 
 # 定义要运行的6个任务列表
 TASKS=(
     # "widowx_put_eggplant_in_basket"
     # "widowx_spoon_on_towel"
-    "widowx_carrot_on_plate"
-    # "widowx_stack_cube"
+    # "widowx_carrot_on_plate"
+    "widowx_stack_cube"
     # "google_robot_pick_coke_can"
     # "google_robot_move_near"
 )
@@ -32,7 +32,7 @@ for task in "${TASKS[@]}"; do
       --output_dir="${BASE_OUT_DIR}/${task}" \
       --max_episodes="${EPISODES}" \
       --model_name=octo-small \
-      --use_vgps=True \
+      --use_vgps=False \
       --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQL_bridge_fractal_b256_20251115_054407/checkpoint_500000" \
       --num_samples=50 \
       --action_temp=0.0 \

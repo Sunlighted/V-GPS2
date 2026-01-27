@@ -49,6 +49,9 @@ def load_vgps_checkpoint(path, wandb_run_name):
         if FLAGS.pretrain_method_name == 'vgps':
             with open("experiments/configs/pretrained_checkpoint.yaml", "r") as f:
                 config = yaml.safe_load(f)
+        if FLAGS.pretrain_method_name == 'vgpsfix_ca':
+            with open("experiments/configs/pretrained_cqlfix_ca_checkpoint.yaml", "r") as f:
+                config = yaml.safe_load(f)
         else:
             with open("experiments/configs/pretrained_cqlfix_checkpoint.yaml", "r") as f:
                 config = yaml.safe_load(f)
@@ -232,15 +235,31 @@ def main(_):
         else:
             print(f"Success Rate: success -- {sum(successes)} / {i + 1}")
 
-        base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_freeze-encoder-fractal-5"
+        base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_octo_ac1"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQL_bridge_fractal_b256_20251115_054407/checkpoint_500000":
             base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_vgps_both-1"
-        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQL_bridge_fractal_b256_only-fractal_20251119_194638/checkpoint_500000":
-            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_only-fractal-1"
-        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/official":
-            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_official"
-        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/simonly":
-            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_simonly"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-encoder/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-encoder-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-encoder/checkpoint_300000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-encoder-3"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-encoder/checkpoint_100000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-encoder-1"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tpu-fractal5":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_baseline-fractal-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_octo-small_20251121_151543/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_only-bridge_20251125_210541/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}_only-bridge-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_only-fractal_20251121_220603/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}_only-fractal-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-saencoder/checkpoint_100000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-saencoder-1"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-saencoder/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-saencoder-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/dyn_loss_srd/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_dyn_srd"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/skip-unlabel/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_skip-unlabelled"
 
         if FLAGS.override_instruction:
             base_folder += "_WRONG_INSTR"
@@ -255,51 +274,51 @@ def main(_):
         video_path = os.path.join(video_folder, f"{i}_success{success}.mp4")
         imageio.mimsave(video_path, images, fps=10)
 
-        if FLAGS.use_vgps:
+        # if FLAGS.use_vgps:
 
-            obs_images = np.stack(obs_image_list, axis=0)   # (T, H, W, 3)
+        #     obs_images = np.stack(obs_image_list, axis=0)   # (T, H, W, 3)
 
-            if len(goals_lang_list) > 0:
-                goals_language = np.stack(goals_lang_list, axis=0)  # (T, D)
-                traj_goals = {"language": goals_language}
-            else:
-                traj_goals = {"language": np.zeros((obs_images.shape[0], 1), dtype=np.float32)}
+        #     if len(goals_lang_list) > 0:
+        #         goals_language = np.stack(goals_lang_list, axis=0)  # (T, D)
+        #         traj_goals = {"language": goals_language}
+        #     else:
+        #         traj_goals = {"language": np.zeros((obs_images.shape[0], 1), dtype=np.float32)}
 
-            actions_arr = np.stack(actions_list, axis=0)    # (T, action_dim)
-            rewards_arr = np.array(rewards_list, dtype=np.float32)  # (T,)
-            masks_arr = np.array(masks_list, dtype=np.float32)      # (T,)
+        #     actions_arr = np.stack(actions_list, axis=0)    # (T, action_dim)
+        #     rewards_arr = np.array(rewards_list, dtype=np.float32)  # (T,)
+        #     masks_arr = np.array(masks_list, dtype=np.float32)      # (T,)
 
-            traj = {
-                "observations": {"image": obs_images},
-                "goals": traj_goals,
-                "actions": actions_arr,
-                "rewards": rewards_arr,
-                "masks": masks_arr,
-            }
+        #     traj = {
+        #         "observations": {"image": obs_images},
+        #         "goals": traj_goals,
+        #         "actions": actions_arr,
+        #         "rewards": rewards_arr,
+        #         "masks": masks_arr,
+        #     }
 
-            N = 1 
-            if (i + 1) % N == 0:
-                rng, val_rng = jax.random.split(rng)
-                # request VOC from plot_values_eval
-                value_plot_img, q_voc = vgps_agent.plot_values_eval(traj, seed=val_rng, return_voc=True)
+        #     N = 1 
+        #     if (i + 1) % N == 0:
+        #         rng, val_rng = jax.random.split(rng)
+        #         # request VOC from plot_values_eval
+        #         value_plot_img, q_voc = vgps_agent.plot_values_eval(traj, seed=val_rng, return_voc=True)
 
-                # record VOC only when last reward == 1.0
-                try:
-                    last_reward = float(rewards_arr[-1])
-                except Exception:
-                    last_reward = None
-                if last_reward == 1.0:
-                    if q_voc != None:
-                        voc_values_success_final.append(float(q_voc))
-                else:
-                    if q_voc != None:
-                        voc_values.append(float(q_voc))
+        #         # record VOC only when last reward == 1.0
+        #         try:
+        #             last_reward = float(rewards_arr[-1])
+        #         except Exception:
+        #             last_reward = None
+        #         if last_reward == 1.0:
+        #             if q_voc != None:
+        #                 voc_values_success_final.append(float(q_voc))
+        #         else:
+        #             if q_voc != None:
+        #                 voc_values.append(float(q_voc))
                         
 
-                value_plot_folder = os.path.join(video_folder, "value_plots")
-                os.makedirs(value_plot_folder, exist_ok=True)
-                value_plot_path = os.path.join(value_plot_folder, f"episode_{i}.png")
-                imageio.imwrite(value_plot_path, value_plot_img)
+        #         value_plot_folder = os.path.join(video_folder, "value_plots")
+        #         os.makedirs(value_plot_folder, exist_ok=True)
+        #         value_plot_path = os.path.join(value_plot_folder, f"episode_{i}.png")
+        #         imageio.imwrite(value_plot_path, value_plot_img)
 
 
     log_message = f"model: {FLAGS.model_name}\nuse_vgps: {FLAGS.use_vgps}\ntask_name: {FLAGS.task_name}\nseed: {FLAGS.seed}\nsuccess_rate: {sum(successes) / len(successes)}"
@@ -314,18 +333,18 @@ def main(_):
 
     print(log_message)
     # append VOC summaries to the log message
-    try:
-        voc_mean = float(np.nanmean(voc_values)) if len(voc_values) > 0 else float('nan')
-    except Exception:
-        voc_mean = float('nan')
-    try:
-        voc_success_mean = float(np.nanmean(voc_values_success_final)) if len(voc_values_success_final) > 0 else float('nan')
-    except Exception:
-        voc_success_mean = float('nan')
+    # try:
+    #     voc_mean = float(np.nanmean(voc_values)) if len(voc_values) > 0 else float('nan')
+    # except Exception:
+    #     voc_mean = float('nan')
+    # try:
+    #     voc_success_mean = float(np.nanmean(voc_values_success_final)) if len(voc_values_success_final) > 0 else float('nan')
+    # except Exception:
+    #     voc_success_mean = float('nan')
 
-    voc_line = f"\nVOC_mean_final_reward_fail: {voc_mean} | VOC_mean_final_reward_success: {voc_success_mean}"
-    print(voc_line)
-    log_message += voc_line
+    # voc_line = f"\nVOC_mean_final_reward_fail: {voc_mean} | VOC_mean_final_reward_success: {voc_success_mean}"
+    # print(voc_line)
+    # log_message += voc_line
     log_file = os.path.join(video_folder, "log.txt")
 
     with open(log_file, "w") as f:
@@ -333,7 +352,7 @@ def main(_):
     
     log_file_all = os.path.join(base_folder, f"log_{FLAGS.task_name}.txt")
     with open(log_file_all, "a") as f:
-        f.write(f"seed: {FLAGS.seed}, success -- {sum(successes)} / {len(successes)}, success rate: {sum(successes) / len(successes)} -- {FLAGS.pretrain_method_name}\nVOC_mean_final_reward0: {voc_mean} | VOC_mean_final_reward1: {voc_success_mean}\n")
+        f.write(f"seed: {FLAGS.seed}, success -- {sum(successes)} / {len(successes)}, success rate: {sum(successes) / len(successes)} -- {FLAGS.pretrain_method_name}\n") # VOC_mean_final_reward0: {voc_mean} | VOC_mean_final_reward1: {voc_success_mean}\n")
         
 if __name__ == "__main__":
     app.run(main)

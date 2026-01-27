@@ -5,6 +5,10 @@ from typing import Any, Dict, List, Sequence, Tuple, Union
 from octo.data.oxe.oxe_dataset_configs import ActionEncoding, OXE_DATASET_CONFIGS
 from octo.data.oxe.oxe_dataset_mixes import OXE_NAMED_MIXES
 from octo.data.oxe.oxe_standardization_transforms import OXE_STANDARDIZATION_TRANSFORMS
+from octo.data.oxe.oxe_dataset_configs import (
+    OXE_EMBEDDING_CONFIGS,
+    OXE_EMBEDDING_TRANSFORMS,
+)
 from octo.data.utils.data_utils import NormalizationType
 from octo.utils.spec import ModuleSpec
 
@@ -159,6 +163,99 @@ def make_oxe_dataset_kwargs_and_weights(
                     action_proprio_normalization_type,
                     discount,
                     num_final_repeat,
+                )
+            )
+            weights.append(weight)
+        except ValueError as e:
+            logging.warning(f"Skipping {name} due to error: {e}")
+
+    return data_kwargs_list, weights
+
+
+def make_embedding_dataset_kwargs(
+    name: str,
+    data_dir: str,
+    action_proprio_normalization_type: NormalizationType = NormalizationType.BOUNDS,
+) -> Dict[str, Any]:
+    """Generates dataset kwargs for an embedding dataset.
+
+    This function is analogous to make_oxe_dataset_kwargs but for pre-computed
+    embedding datasets created by Octo_embedding_save.py.
+
+    Args:
+        name: Name of the embedding dataset (e.g., 'bridge_dataset_embedding').
+        data_dir: Base data directory containing the embedding datasets.
+        action_proprio_normalization_type: Normalization type for actions.
+
+    Returns:
+        Dictionary of kwargs for make_embedding_dataset.
+    """
+    if name not in OXE_EMBEDDING_CONFIGS:
+        raise ValueError(
+            f"Unknown embedding dataset: {name}. "
+            f"Available: {list(OXE_EMBEDDING_CONFIGS.keys())}"
+        )
+
+    config = OXE_EMBEDDING_CONFIGS[name]
+
+    # For embedding datasets, normalize all action dimensions except gripper
+    # (gripper is last dimension, following OXE convention)
+    action_normalization_mask = [True] * (config["action_dim"] - 1) + [False]
+
+    return {
+        "name": name,
+        "data_dir": data_dir,
+        "action_proprio_normalization_type": action_proprio_normalization_type,
+        "action_normalization_mask": action_normalization_mask,
+    }
+
+
+def make_embedding_dataset_kwargs_and_weights(
+    data_mix: Union[str, Sequence[Tuple[str, float]]],
+    data_dir: str,
+    action_proprio_normalization_type: NormalizationType = NormalizationType.BOUNDS,
+) -> Tuple[List[Dict[str, Any]], List[float]]:
+    """Generates dataset kwargs and weights for embedding dataset mixes.
+
+    This function is analogous to make_oxe_dataset_kwargs_and_weights but for
+    pre-computed embedding datasets.
+
+    Args:
+        data_mix: List of (dataset name, sampling weight) tuples, or a string
+            specifying a pre-defined mix (e.g., 'bridge_embedding').
+        data_dir: Base data directory containing the embedding datasets.
+        action_proprio_normalization_type: Normalization type for actions.
+
+    Returns:
+        Tuple of (dataset_kwargs_list, sampling weights).
+    """
+    if isinstance(data_mix, str):
+        if data_mix not in OXE_NAMED_MIXES:
+            raise ValueError(
+                f"Unknown data mix: {data_mix}. "
+                f"Available embedding mixes: bridge_embedding, fractal_embedding, "
+                f"bridge_fractal_embedding"
+            )
+        data_mix = OXE_NAMED_MIXES[data_mix]
+
+    # Filter duplicates
+    filtered_datasets, included_dataset_names = [], []
+    for name, weight in data_mix:
+        if name not in included_dataset_names:
+            filtered_datasets.append((name, weight))
+            included_dataset_names.append(name)
+        else:
+            logging.warning(f"Skipping duplicate: {(name, weight)}.")
+    data_mix = filtered_datasets
+
+    data_kwargs_list, weights = [], []
+    for name, weight in data_mix:
+        try:
+            data_kwargs_list.append(
+                make_embedding_dataset_kwargs(
+                    name,
+                    data_dir,
+                    action_proprio_normalization_type,
                 )
             )
             weights.append(weight)

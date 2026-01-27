@@ -1,6 +1,6 @@
 import os
 from functools import partial
-os.environ["CUDA_VISIBLE_DEVICES"] = "4,5"
+os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +22,7 @@ from jax.experimental.compilation_cache import compilation_cache
 import random
 
 from octo.data.dataset import make_interleaved_dataset
+from octo.data.dataset import make_dataset_from_rlds, apply_trajectory_transforms
 from octo.data.oxe import make_oxe_dataset_kwargs_and_weights
 from octo.utils.train_callbacks import create_validation_dataset
 from octo.utils.train_utils import filter_eval_datasets
@@ -121,6 +122,67 @@ def main(_):
         )
         oxe_kwargs = FLAGS.oxedata_config["oxe_kwargs"]
         del FLAGS.oxedata_config["oxe_kwargs"]
+        
+    # import copy
+
+    # # ================= ⚡️ 极速部分抽样检查 (Partial Blind Scan) =================
+    # CHECK_LIMIT = 10000  # 👈 你想检查多少个 Batch/Sample
+    # print(f"\n" + "="*60)
+    # print(f"⚡️ 正在构建'影子数据集'并快速抽样检查前 {CHECK_LIMIT} 条数据...")
+
+    # # 1. 复制并修改配置：移除图片读取，极大加速 IO
+    # check_config = copy.deepcopy(FLAGS.oxedata_config)
+    
+    # if "dataset_kwargs_list" in check_config:
+    #     for ds_kwargs in check_config["dataset_kwargs_list"]:
+    #         ds_kwargs["image_obs_keys"] = {}  # ❌ 不读 RGB
+    #         ds_kwargs["depth_obs_keys"] = {}  # ❌ 不读 Depth
+    
+    # # 禁用帧级变换 (因为没有图片了)
+    # check_config["frame_transform_kwargs"] = {}
+
+    # # 2. 构建影子数据集
+    # fast_check_data = make_interleaved_dataset(**check_config, train=True)
+
+    # # 3. 开始扫描 (仅扫描前 CHECK_LIMIT 个)
+    # empty_count = 0
+    # scanned_samples = 0
+    
+    # # 使用 .take(CHECK_LIMIT) 限制读取数量
+    # for i, sample in tqdm.tqdm(enumerate(fast_check_data.take(CHECK_LIMIT).as_numpy_iterator()), total=CHECK_LIMIT):
+    #     # 提取指令
+    #     raw_langs = sample["task"]["language_instruction"]
+    #     raw_langs = np.ravel(raw_langs) # 展平以处理 Batch
+        
+    #     for lang in raw_langs:
+    #         # 处理 numpy/bytes 类型
+    #         if isinstance(lang, (np.ndarray, np.generic)):
+    #             lang = lang.item()
+    #         if isinstance(lang, bytes):
+    #             lang = lang.decode("utf-8", errors='ignore')
+            
+    #         # 检查空字符串
+    #         if not str(lang).strip():
+    #             empty_count += 1
+    #             if empty_count <= 3: # 只打印前 3 个错误示例
+    #                  print(f"   ⚠️  [Index {i}] 发现空指令!")
+        
+    #     scanned_samples += 1
+
+    # # 4. 输出结果
+    # print(f"📊 抽样检查结束: 在 {scanned_samples} 个样本中，发现 {empty_count} 条空指令。")
+    # if empty_count > 0:
+    #     print(f"❌ 警告: 你的训练数据中包含空指令！请检查 'skip_unlabeled' 设置。")
+    # else:
+    #     print(f"✅ 通过: 前 {CHECK_LIMIT} 条数据均有语言标签。")
+    
+    # print("="*60 + "\n")
+
+    # # 5. 清理内存
+    # del fast_check_data, check_config
+    # # =========================================================================
+
+    # assert 0
     
     train_data = make_interleaved_dataset(
         **FLAGS.oxedata_config, train=True

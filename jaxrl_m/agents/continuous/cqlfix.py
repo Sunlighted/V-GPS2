@@ -19,7 +19,7 @@ from jaxrl_m.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from jaxrl_m.common.encoding import OctoLCEncodingWrapper, PrecomputedFeatureEncodingWrapper
 from jaxrl_m.common.optimizers import make_optimizer
 from jaxrl_m.common.typing import *
-from jaxrl_m.networks.actor_critic_nets import Critic, Policy, ensemblize
+from jaxrl_m.networks.actor_critic_nets import Critic, Policy, Critic_e, ensemblize
 from jaxrl_m.networks.lagrange import GeqLagrangeMultiplier, LeqLagrangeMultiplier
 from jaxrl_m.networks.mlp import MLP, Scalar
 import matplotlib
@@ -439,9 +439,8 @@ class EmbeddingCQLAgent(SACAgent):
             observations=traj["observations"], goals=goals, argmax=True
         )
         mse = ((actions - traj["actions"]) ** 2).sum((-1))
-        eval_obs = self._format_goal_conditioned_obs(traj["observations"], goals)
         q = self.forward_critic(
-            eval_obs,
+            (traj["observations"], goals),
             traj["actions"],
             seed,
             train=False,
@@ -449,7 +448,7 @@ class EmbeddingCQLAgent(SACAgent):
         )
 
         target_q = self.forward_target_critic(
-            eval_obs,
+            (traj["observations"], goals),
             traj["actions"],
             seed,
         )
@@ -942,6 +941,16 @@ class EmbeddingCQLAgent(SACAgent):
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
         },
+        # action_encoder_kwargs: dict = {
+        #     "hidden_dims": [256],
+        #     "activate_final": True,
+        #     "use_layer_norm": False,
+        # },
+        # state_action_encoder_kwargs: dict = {
+        #     "hidden_dims": [512, 512],
+        #     "activate_final": True,
+        #     "use_layer_norm": True,
+        # },
         # goals
         goals: Optional[Data] = None,
         early_goal_concat: bool = False,
@@ -953,7 +962,7 @@ class EmbeddingCQLAgent(SACAgent):
         if config.language_conditioned:
             assert config.goal_conditioned, "Language conditioning requires goal conditioning"
             
-        if config.use_precomputed_embeddings:
+        if octo_model is None:
             encoder_def = PrecomputedFeatureEncodingWrapper(stop_gradient=True)
         else:
             encoder_def = OctoLCEncodingWrapper(
@@ -974,6 +983,10 @@ class EmbeddingCQLAgent(SACAgent):
         critic_backbone = ensemblize(critic_backbone, config.critic_ensemble_size)(
             name="critic_ensemble"
         )
+        # critic_def = partial(
+        #     Critic_e, encoder=encoder_def, network=critic_backbone,
+        #     action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
+        # )(name="critic")
         critic_def = partial(
             Critic, encoder=encoder_def, network=critic_backbone
         )(name="critic")

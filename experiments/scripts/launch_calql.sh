@@ -4,7 +4,7 @@ save_dir=/data/Chenyang/value_learning/V-GPS/save # FILL IN
 
 PROJECT=VGPS
 batch_size=512
-data_mix=bridge_fractal
+data_mix=bridge
 discount=0.98
 
 NAME=VGPS_CalQL_${data_mix}_b${batch_size}_both
