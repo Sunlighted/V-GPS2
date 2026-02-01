@@ -2,7 +2,7 @@
 # Launch script for training with pre-computed embeddings
 
 # Configuration - FILL IN THESE PATHS
-embedding_data_dir=/data/Chenyang/OXE_embedding  # Directory containing embedding datasets
+embedding_data_dir=/data/Chenyang/OXE_embedding_noaug  # Directory containing embedding datasets
 save_dir=/data/Chenyang/value_learning/V-GPS/save  # Directory to save checkpoints
 
 # Experiment settings

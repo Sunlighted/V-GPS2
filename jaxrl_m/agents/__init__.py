@@ -2,6 +2,7 @@ from .continuous.bc import BCAgent
 from .continuous.calql import CalQLAgent
 from .continuous.cql import ContinuousCQLAgent
 from .continuous.cqlfix import EmbeddingCQLAgent
+from .continuous.cqlfix_saen import EmbeddingCQLSAAgent
 from .continuous.cqlfix_ca import EmbeddingCQLCrossAttenAgent
 from .continuous.cql_simsiam import CQLSimSiamAgent
 from .continuous.cql_ttt_predict import CQLTTTPredictAgent
@@ -11,6 +12,7 @@ from .continuous.gc_ddpm_bc import GCDDPMBCAgent
 from .continuous.gc_iql import GCIQLAgent
 from .continuous.iql import IQLAgent
 from .continuous.sac import SACAgent
+from .continuous.value_flows import ValueFlowsAgent
 
 agents = {
     "gc_bc": GCBCAgent,
@@ -20,10 +22,12 @@ agents = {
     "iql": IQLAgent,
     "cql": ContinuousCQLAgent,
     "cqlfix": EmbeddingCQLAgent,
+    "cqlfix_saen": EmbeddingCQLSAAgent,
     "cqlfix_ca": EmbeddingCQLCrossAttenAgent,
     "calql": CalQLAgent,
     "sac": SACAgent,
     "cql_simsiam": CQLSimSiamAgent,
     "cql_ttt": CQLTTTPredictAgent,
     "cql_ttt_e2e": ContinuousCQLTTTAgent,
+    "value_flows": ValueFlowsAgent,
 }

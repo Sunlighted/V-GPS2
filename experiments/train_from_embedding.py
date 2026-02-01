@@ -1,6 +1,7 @@
 import os
 from functools import partial
-os.environ["CUDA_VISIBLE_DEVICES"] = "6,7"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0,1"
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 import jax
 import jax.numpy as jnp
@@ -84,6 +85,10 @@ def main(_):
         """
         Process a batch from the embedding dataset to be compatible with jaxrl_minimal.
         Includes dimension checks.
+
+        IMPORTANT: When encoder=None (precomputed embeddings), the Policy/Critic networks
+        only use observations["image"] and ignore goals. Therefore we MUST concatenate
+        the language embedding to the observation embedding here.
         """
 
         # For language embedding, we use the pre-computed T5 embedding
@@ -95,14 +100,23 @@ def main(_):
         if len(language_embedding.shape) == 3:
             # Mean pool over tokens: (batch, num_tokens, 768) -> (batch, 768)
             language_embedding = np.mean(language_embedding, axis=1)
-            print(f"{language_embedding.shape}")
+
+        # Get observation embeddings
+        obs_embedding = batch["observation"]["embedding"]
+        next_obs_embedding = batch["next_observation"]["embedding"]
+
+        # CRITICAL: Concatenate language embedding to observation embedding
+        # This is necessary because when encoder=None, the Policy/Critic networks
+        # only use observations["image"] and completely ignore goals["language"]
+        obs_with_lang = np.concatenate([obs_embedding, language_embedding], axis=-1)
+        next_obs_with_lang = np.concatenate([next_obs_embedding, language_embedding], axis=-1)
 
         result = dict(
             actions=batch["action"].squeeze(),
-            goals=dict(language=language_embedding),
+            goals=dict(language=language_embedding),  # Keep for compatibility
             mc_returns=batch["mc_return"],
-            observations=dict(image=batch["observation"]["embedding"]),
-            next_observations=dict(image=batch["next_observation"]["embedding"]),
+            observations=dict(image=obs_with_lang),  # Now includes language
+            next_observations=dict(image=next_obs_with_lang),  # Now includes language
             rewards=batch["reward"],
             masks=batch["td_mask"],
         )
@@ -139,16 +153,20 @@ def main(_):
         )
 
     # Unbatch trajectories into individual transitions, then shuffle and batch
+    # IMPORTANT: shuffle BEFORE repeat to avoid epoch boundary distribution shifts
+    # that cause periodic fluctuations in training metrics
     train_data = (
         train_dataset
+        .shuffle(10000)  # First shuffle at trajectory level
         .unbatch()
-        .shuffle(embedding_config.get("shuffle_buffer_size", 100000))
-        .repeat()
+        .shuffle(embedding_config.get("shuffle_buffer_size", 1000000))
+        .repeat()  # repeat AFTER shuffle to avoid epoch boundary artifacts
         .batch(FLAGS.config.batch_size)
+        .prefetch(tf.data.AUTOTUNE)
     )
 
     train_data_iter = map(
-        shard_fn, map(process_embedding_batch, train_data.prefetch(0).as_numpy_iterator())
+        shard_fn, map(process_embedding_batch, train_data.as_numpy_iterator())
     )
 
     # Create validation dataset
@@ -159,7 +177,7 @@ def main(_):
             data_dir=embedding_config.data_dir,
             train=False,
             shuffle=False,
-            skip_unlabeled=embedding_config.get("skip_unlabeled", False),
+            skip_unlabeled=embedding_config.get("skip_unlabeled", True),
             skip_norm=embedding_config.get("skip_norm", False),
             dataset_statistics=train_stats,  # Use training statistics for normalization
         )
@@ -169,7 +187,7 @@ def main(_):
             data_dir=embedding_config.data_dir,
             train=False,
             shuffle=False,
-            skip_unlabeled=embedding_config.get("skip_unlabeled", False),
+            skip_unlabeled=embedding_config.get("skip_unlabeled", True),
             skip_norm=embedding_config.get("skip_norm", False),
             dataset_statistics=train_stats,  # Use training statistics for normalization
         )
@@ -178,12 +196,13 @@ def main(_):
         val_dataset
         .unbatch()
         .shuffle(1000)
-        .repeat()
+        .repeat()  # repeat AFTER shuffle for consistency
         .batch(FLAGS.config.batch_size)
+        .prefetch(tf.data.AUTOTUNE)
     )
 
     val_data_iter = map(
-        shard_fn, map(process_embedding_batch, val_data.prefetch(0).as_numpy_iterator())
+        shard_fn, map(process_embedding_batch, val_data.as_numpy_iterator())
     )
 
     # Get example batch for initialization

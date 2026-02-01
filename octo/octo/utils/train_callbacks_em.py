@@ -13,7 +13,7 @@ import orbax.checkpoint
 import tensorflow as tf
 import tqdm
 
-from octo.data.dataset import make_single_dataset, make_single_traj_dataset
+from octo.data.dataset_em import make_single_dataset, make_single_traj_dataset
 from octo.data.utils.text_processing import TextProcessor
 from octo.utils.train_utils import batched_apply, TrainState
 from octo.utils.typing import Any, Data, Sequence

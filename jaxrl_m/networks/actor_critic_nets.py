@@ -37,7 +37,7 @@ class Critic(nn.Module):
         self, observations: jnp.ndarray, actions: jnp.ndarray, train: bool = False
     ) -> jnp.ndarray:
         if self.encoder is None:
-            obs_enc = observations
+            obs_enc = observations[0]["image"]
         else:
             obs_enc = self.encoder(observations)
             
@@ -385,6 +385,30 @@ class ContrastiveCritic(nn.Module):
 
         return outer
 
+class CriticVectorField(nn.Module):
+    encoder: Optional[nn.Module]
+    network: nn.Module
+    init_final: Optional[float] = None
+
+    @nn.compact
+    def __call__(
+        self, returns, times, observations: jnp.ndarray, actions: jnp.ndarray = None, train: bool = False
+    ) -> jnp.ndarray:
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+
+        inputs = jnp.concatenate([returns, times, obs_enc, actions], axis=-1)
+        outputs = self.network(inputs, train=train)
+        if self.init_final is not None:
+            value = nn.Dense(
+                1,
+                kernel_init=nn.initializers.uniform(-self.init_final, self.init_final),
+            )(outputs)
+        else:
+            value = nn.Dense(1, kernel_init=default_init())(outputs)
+        return jnp.squeeze(value, -1)
 
 def ensemblize(cls, num_qs, out_axes=0):
     return nn.vmap(
@@ -413,7 +437,7 @@ class Policy(nn.Module):
         self, observations: jnp.ndarray, temperature: float = 1.0, train: bool = False
     ) -> distrax.Distribution:
         if self.encoder is None:
-            obs_enc = observations
+            obs_enc = observations[0]["image"]
         else:
             obs_enc = self.encoder(observations)
             
@@ -466,6 +490,46 @@ class Policy(nn.Module):
 
         return distribution
 
+
+class ActorVectorField(nn.Module):
+    """Actor vector field network for flow matching.
+
+    Attributes:
+        hidden_dims: Hidden layer dimensions.
+        action_dim: Action dimension.
+        layer_norm: Whether to apply layer normalization.
+        encoder: Optional encoder module to encode the inputs.
+    """
+
+    encoder: Optional[nn.Module]
+    network: nn.Module
+    action_dim: int
+
+    @nn.compact
+    def __call__(self, observations, actions, times=None, train=False):
+        """Return the vectors at the given states, actions, and times (optional).
+
+        Args:
+            observations: Observations.
+            actions: Actions.
+            times: Times (optional).
+            is_encoded: Whether the observations are already encoded.
+        """
+        if self.encoder is None:
+            obs_enc = observations
+        else:
+            obs_enc = self.encoder(observations)
+
+        if times is None:
+            inputs = jnp.concatenate([obs_enc, actions], axis=-1)
+        else:
+            inputs = jnp.concatenate([obs_enc, actions, times], axis=-1)
+
+        outputs = self.network(inputs, train=train)
+
+        v = nn.Dense(self.action_dim, kernel_init=default_init())(outputs)
+
+        return v
 
 class TanhMultivariateNormalDiag(distrax.Transformed):
     def __init__(

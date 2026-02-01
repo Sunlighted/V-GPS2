@@ -87,14 +87,14 @@ def get_config(config_string):
                     ),
                     use_calql=False,
                     critic_network_kwargs = dict(
-                        hidden_dims = [256, 256],
-                        activate_final = True,
-                        use_layer_norm = False,
+                        hidden_dims = [512, 512, 512, 512],
+                        activate_final = False,
+                        use_layer_norm = True,
                     ),
                     policy_network_kwargs = dict(
-                        hidden_dims = [256, 256],
-                        activate_final = True,
-                        use_layer_norm = False,
+                        hidden_dims = [512, 512, 512, 512],
+                        activate_final = False,
+                        use_layer_norm = True,
                     ),
                     policy_kwargs = dict(
                         tanh_squash_distribution=True,
@@ -109,7 +109,7 @@ def get_config(config_string):
                         warmup_steps=2000,
                     ),
                 ),
-                text_processor="t5",
+                text_processor=None,
                 text_processor_kwargs=dict(),
                 encoder="octo-small",
                 encoder_kwargs=dict(

@@ -967,6 +967,13 @@ def mujoco_manip_dataset_transform(trajectory: Dict[str, Any]) -> Dict[str, Any]
     )
     return trajectory
 
+def embedding_dataset_transform(trajectory: dict) -> dict:
+    """Pass-through transform for embedding datasets.
+
+    The data is already in a standardized format from Octo_embedding_save.py,
+    so no transformation is needed.
+    """
+    return trajectory
 
 OXE_STANDARDIZATION_TRANSFORMS = {
     "bridge_dataset": bridge_dataset_transform,
@@ -1027,4 +1034,6 @@ OXE_STANDARDIZATION_TRANSFORMS = {
     "roboset": roboset_dataset_transform,
     "rh20t": rh20t_dataset_transform,
     "mujoco_manip": mujoco_manip_dataset_transform,
+    "bridge_dataset_embedding": embedding_dataset_transform,
+    "fractal20220817_data_embedding": embedding_dataset_transform,
 }

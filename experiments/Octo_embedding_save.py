@@ -55,7 +55,7 @@ flags.DEFINE_string("encoder", "octo-small", "Octo model name: octo-small or oct
 flags.DEFINE_string("output_dir", "logs/embeddings", "Directory where embeddings are stored.")
 
 # Data processing flags
-flags.DEFINE_integer("batch_size", 64, "Batch size for embedding generation.")
+flags.DEFINE_integer("batch_size", 256, "Batch size for embedding generation.")
 flags.DEFINE_integer("max_T", 600, "Maximum trajectory length.")
 flags.DEFINE_integer("episodes_per_shard", 50, "Number of trajectories per TFRecord shard.")
 flags.DEFINE_bool("overwrite", False, "If True, delete output_dir before processing.")
@@ -73,6 +73,7 @@ config_flags.DEFINE_config_file(
 flags.DEFINE_string("data_dir", None, "Override data directory in config.")
 flags.DEFINE_string("data_mix", None, "Override data mix in config (e.g., 'bridge', 'bridge_fractal').")
 flags.DEFINE_string("dataset_name", None, "Filter to specific dataset(s), comma-separated.")
+flags.DEFINE_integer("num_augmentations", 100, "Number of augmentations to apply.")
 
 
 class OctoEncoderModule(nn.Module):
@@ -164,69 +165,69 @@ class OctoEmbeddingGenerator:
     def encode_trajectory(self, images: np.ndarray, language_instruction: str, batch_size: int = 64) -> np.ndarray:
         """
         Args:
-            images: (T, 256, 256, 3)
-            language_instruction: str (原始文本，不再是 embedding)
+            images: (T, N, 256, 256, 3) - Already augmented by TF Pipeline
+        Returns:
+            embeddings: (T, N, D)
         """
-        T = images.shape[0]
-        
-        # 1. 准备 Task (Token IDs)
-        # 为了避免重复 Tokenize 64 次，我们先创建一个 size=1 的 task，然后复制
-        # 这比 tokenizer 跑 64 次要快得多
+        T, N, H, W, C = images.shape
+
+        flat_images = images.reshape(-1, H, W, C)
+        total_samples = flat_images.shape[0]
+
+        # 1. 准备 Task (Token IDs) - 预先创建 batch_size 大小，避免重复 Tokenize
         single_task = self.model.create_tasks(texts=[language_instruction])
-        
-        # 将 task 中的所有数组在第 0 维复制 batch_size 份
-        # 使用 jax.tree_map 自动处理嵌套字典
         batch_tasks = jax.tree_map(
-            lambda x: np.tile(x, (batch_size,) + (1,) * (x.ndim - 1)), 
+            lambda x: np.tile(x, (batch_size,) + (1,) * (x.ndim - 1)),
             single_task
         )
-        
-        # 2. 准备 Pad Mask (全 1)
+
+        # 2. 准备 Pad Mask (全 1) - 固定 batch_size 大小
         batch_pad_mask = np.ones((batch_size, 1), dtype=bool)
 
         all_embeddings = []
-        
-        for start in range(0, T, batch_size):
-            end = min(start + batch_size, T)
-            batch_imgs = images[start:end]
+
+        for start in range(0, total_samples, batch_size):
+            end = min(start + batch_size, total_samples)
+            batch_imgs = flat_images[start:end]
             actual_n = batch_imgs.shape[0]
-            
-            # --- Padding Logic ---
+
+            # --- Padding Logic: 确保所有输入都是 batch_size 大小 ---
             if actual_n < batch_size:
                 pad_len = batch_size - actual_n
                 batch_imgs_padded = np.pad(batch_imgs, ((0, pad_len), (0,0), (0,0), (0,0)), mode='constant')
             else:
                 batch_imgs_padded = batch_imgs
 
-            # 构造 input_observation
+            # 构造 input_observation - 始终使用 batch_size 大小
             input_obs = {
-                "image_primary": batch_imgs_padded[:, None], # (B, 1, H, W, C)
-                self.pad_key: batch_pad_mask
+                "image_primary": batch_imgs_padded[:, None],  # (batch_size, 1, H, W, C)
+                self.pad_key: batch_pad_mask  # (batch_size, 1)
             }
 
             # --- Run JIT ---
-            # 这里的 batch_tasks 永远是 64 大小，input_obs 也是 64 大小
-            # 所以 JAX 不会重新编译
+            # batch_tasks, input_obs, batch_pad_mask 都是 batch_size 大小
+            # JAX 不会重新编译
             embeddings_padded = self._extract_fn(
-                self.model.params, 
-                input_obs, 
-                batch_tasks, 
+                self.model.params,
+                input_obs,
+                batch_tasks,
                 batch_pad_mask
             )
-            
-            # Unpad
+
+            # Unpad: 只取前 actual_n 个有效结果
             if actual_n < batch_size:
-                # 转换回 numpy 并切片
                 embeddings = np.array(embeddings_padded[:actual_n])
             else:
                 embeddings = np.array(embeddings_padded)
-            
+
             all_embeddings.append(embeddings)
 
         if not all_embeddings:
             return np.zeros((0, self.embedding_dim))
-            
-        return np.concatenate(all_embeddings, axis=0)
+
+        flat_embeddings = np.concatenate(all_embeddings, axis=0)
+
+        return flat_embeddings.reshape(T, N, -1)
 
 
 # ============================================================================
@@ -290,85 +291,70 @@ class TFDSCompatibleWriter:
 
     def write_trajectory(
         self,
-        obs_embeddings: np.ndarray,      # (T, D) - Octo embeddings
-        next_obs_embeddings: np.ndarray, # (T, D) - next observation embeddings
-        actions: np.ndarray,              # (T, action_dim)
-        rewards: np.ndarray,              # (T,)
-        td_mask: np.ndarray,              # (T,)
-        mc_return: np.ndarray,            # (T,)
+        obs_embeddings: np.ndarray,      # (T, D)
+        next_obs_embeddings: np.ndarray, # (T, D)
+        actions: np.ndarray,             # (T, A)
+        rewards: np.ndarray,             # (T,)
+        td_mask: np.ndarray,             # (T,)
+        mc_return: np.ndarray,           # (T,)
         language_instruction: str,
-        language_embedding: np.ndarray,   # (512,) or similar
+        language_embedding: np.ndarray,  # (L,)
         total_shards: int,
     ) -> None:
         if self._writer is None or self._episodes_in_shard >= self.episodes_per_shard:
             self._open_new_shard(total_shards)
 
         T = obs_embeddings.shape[0]
+        
+        # 辅助函数：创建 FloatList Feature (扁平化存储)
+        def _float_list_feature(values):
+            return tf.train.Feature(float_list=tf.train.FloatList(value=values.flatten()))
 
-        # Build steps sequence - matching bridge_dataset structure
-        # Each step is serialized as a SequenceExample or nested Features
-        steps_features = []
-        for t in range(T):
-            step_features = {
-                # Observation: embedding instead of image
-                "steps/observation/embedding": _tensor_feature(obs_embeddings[t].astype(np.float32)),
-                "steps/next_observation/embedding": _tensor_feature(next_obs_embeddings[t].astype(np.float32)),
+        def _int64_list_feature(values):
+            return tf.train.Feature(int64_list=tf.train.Int64List(value=values.flatten()))
 
-                # Action
-                "steps/action": _tensor_feature(actions[t].astype(np.float32)),
+        def _bytes_list_feature(values):
+            return tf.train.Feature(bytes_list=tf.train.BytesList(value=[v.encode('utf-8') for v in values]))
 
-                # Language (repeated per step for compatibility)
-                "steps/language_instruction": _bytes_feature(language_instruction.encode("utf-8")),
-                "steps/language_embedding": _tensor_feature(language_embedding.astype(np.float32)),
-
-                # Rewards and masks
-                "steps/reward": _float_feature(float(rewards[t])),
-                "steps/td_mask": _float_feature(float(td_mask[t])),
-                "steps/mc_return": _float_feature(float(mc_return[t])),
-                "steps/discount": _float_feature(0.98),
-
-                # Step markers
-                "steps/is_first": _int64_feature(1 if t == 0 else 0),
-                "steps/is_last": _int64_feature(1 if t == T - 1 else 0),
-                "steps/is_terminal": _int64_feature(1 if t == T - 1 else 0),
-            }
-            steps_features.append(step_features)
-
-        # Flatten all steps into a single feature dict with indexed keys
-        # This matches how TFDS stores sequences
         all_features = {}
 
-        # Store steps as serialized tensor sequences
-        all_features["steps/observation/embedding"] = _tensor_feature(obs_embeddings.astype(np.float32))
-        all_features["steps/next_observation/embedding"] = _tensor_feature(next_obs_embeddings.astype(np.float32))
-        all_features["steps/action"] = _tensor_feature(actions.astype(np.float32))
-        all_features["steps/language_instruction"] = _bytes_feature(language_instruction.encode("utf-8"))
-        all_features["steps/language_embedding"] = _tensor_feature(language_embedding.astype(np.float32))
-        all_features["steps/reward"] = _tensor_feature(rewards.astype(np.float32))
-        all_features["steps/td_mask"] = _tensor_feature(td_mask.astype(np.float32))
-        all_features["steps/mc_return"] = _tensor_feature(mc_return.astype(np.float32))
+        # 1. 核心数据：Embedding 和 Action 改用原生 FloatList 存储
+        # TFDS 会自动根据 features.json 里的 shape 把这一长串 float reshape 回去
+        all_features["steps/observation/embedding"] = _float_list_feature(obs_embeddings)
+        all_features["steps/next_observation/embedding"] = _float_list_feature(next_obs_embeddings)
+        all_features["steps/action"] = _float_list_feature(actions)
+        
+        # 语言 Embedding (需要重复 T 次以符合 Sequence 结构，或者只存一次但 TFDS Sequence 需要对齐)
+        # 通常做法是重复 T 次，或者利用 TFDS 的上下文特性。
+        # 这里为了稳妥，我们把 (D,) 的语言 embedding 扩展成 (T, D) 存进去
+        lang_emb_repeated = np.tile(language_embedding, (T, 1))
+        all_features["steps/language_embedding"] = _float_list_feature(lang_emb_repeated)
 
-        # Scalars per step
-        is_first = np.zeros(T, dtype=np.bool_)
-        is_first[0] = True
-        is_last = np.zeros(T, dtype=np.bool_)
-        is_last[-1] = True
-        is_terminal = np.zeros(T, dtype=np.bool_)
-        is_terminal[-1] = True
-        discount = np.ones(T, dtype=np.float32) * 0.98
+        # 2. 文本
+        all_features["steps/language_instruction"] = _bytes_list_feature([language_instruction] * T)
 
-        all_features["steps/is_first"] = _tensor_feature(is_first)
-        all_features["steps/is_last"] = _tensor_feature(is_last)
-        all_features["steps/is_terminal"] = _tensor_feature(is_terminal)
-        all_features["steps/discount"] = _tensor_feature(discount)
+        # 3. 标量
+        all_features["steps/reward"] = _float_list_feature(rewards)
+        all_features["steps/td_mask"] = _float_list_feature(td_mask)
+        all_features["steps/mc_return"] = _float_list_feature(mc_return)
+        
+        discounts = np.ones(T, dtype=np.float32) * 0.98
+        all_features["steps/discount"] = _float_list_feature(discounts)
 
-        # Episode metadata
+        # 4. 布尔标志 (存为 Int64 0/1)
+        is_first = np.zeros(T, dtype=np.int64); is_first[0] = 1
+        is_last = np.zeros(T, dtype=np.int64); is_last[-1] = 1
+        is_terminal = np.zeros(T, dtype=np.int64); is_terminal[-1] = 1
+
+        all_features["steps/is_first"] = _int64_list_feature(is_first)
+        all_features["steps/is_last"] = _int64_list_feature(is_last)
+        all_features["steps/is_terminal"] = _int64_list_feature(is_terminal)
+
+        # Metadata
         all_features["episode_metadata/episode_id"] = _int64_feature(self.num_trajectories)
         all_features["episode_metadata/trajectory_length"] = _int64_feature(T)
 
         example = tf.train.Example(features=tf.train.Features(feature=all_features))
-
-        assert self._writer is not None
         self._writer.write(example.SerializeToString())
         self._episodes_in_shard += 1
         self.num_trajectories += 1
@@ -381,8 +367,7 @@ class TFDSCompatibleWriter:
             self._writer = None
 
 
-def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, lang_emb_dim: int = 512):
-    """Save features.json matching TFDS format."""
+def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, lang_emb_dim: int = 768): # 注意 T5 是 768
     features_schema = {
         "pythonClassName": "tensorflow_datasets.core.features.features_dict.FeaturesDict",
         "featuresDict": {
@@ -410,12 +395,7 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
                                             "dtype": "float32",
                                             "encoding": "none"
                                         },
-                                        "description": "Language embedding (MUSE)"
-                                    },
-                                    "language_instruction": {
-                                        "pythonClassName": "tensorflow_datasets.core.features.text_feature.Text",
-                                        "text": {},
-                                        "description": "Language Instruction"
+                                        "description": "Language embedding"
                                     },
                                     "observation": {
                                         "pythonClassName": "tensorflow_datasets.core.features.features_dict.FeaturesDict",
@@ -424,11 +404,11 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
                                                 "embedding": {
                                                     "pythonClassName": "tensorflow_datasets.core.features.tensor_feature.Tensor",
                                                     "tensor": {
-                                                        "shape": {"dimensions": [str(embedding_dim)]},
+                                                        "shape": {"dimensions": [str(FLAGS.num_augmentations), str(embedding_dim)]},
                                                         "dtype": "float32",
                                                         "encoding": "none"
                                                     },
-                                                    "description": "Octo embedding for observation"
+                                                    "description": "Octo embedding"
                                                 }
                                             }
                                         }
@@ -440,11 +420,11 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
                                                 "embedding": {
                                                     "pythonClassName": "tensorflow_datasets.core.features.tensor_feature.Tensor",
                                                     "tensor": {
-                                                        "shape": {"dimensions": [str(embedding_dim)]},
+                                                        "shape": {"dimensions": [str(FLAGS.num_augmentations), str(embedding_dim)]},
                                                         "dtype": "float32",
                                                         "encoding": "none"
                                                     },
-                                                    "description": "Octo embedding for next observation"
+                                                    "description": "Next Octo embedding"
                                                 }
                                             }
                                         }
@@ -454,35 +434,30 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
                                         "tensor": {"shape": {}, "dtype": "float32", "encoding": "none"},
                                         "description": "Reward"
                                     },
-                                    "td_mask": {
+                                    "is_last": {
                                         "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                        "tensor": {"shape": {}, "dtype": "float32", "encoding": "none"},
-                                        "description": "TD mask (1 for valid, 0 for terminal)"
-                                    },
-                                    "mc_return": {
-                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                        "tensor": {"shape": {}, "dtype": "float32", "encoding": "none"},
-                                        "description": "Monte Carlo return"
-                                    },
-                                    "discount": {
-                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                        "tensor": {"shape": {}, "dtype": "float32", "encoding": "none"},
-                                        "description": "Discount factor"
+                                        "tensor": {"shape": {}, "dtype": "bool", "encoding": "none"}, # TFDS 会自动把 int64 0/1 转成 bool
+                                        "description": "True on last step"
                                     },
                                     "is_first": {
                                         "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
                                         "tensor": {"shape": {}, "dtype": "bool", "encoding": "none"},
                                         "description": "True on first step"
                                     },
-                                    "is_last": {
-                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                        "tensor": {"shape": {}, "dtype": "bool", "encoding": "none"},
-                                        "description": "True on last step"
-                                    },
                                     "is_terminal": {
                                         "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
                                         "tensor": {"shape": {}, "dtype": "bool", "encoding": "none"},
                                         "description": "True on terminal step"
+                                    },
+                                    "discount": {
+                                        "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
+                                        "tensor": {"shape": {}, "dtype": "float32", "encoding": "none"},
+                                        "description": "Discount"
+                                    },
+                                    "language_instruction": {
+                                        "pythonClassName": "tensorflow_datasets.core.features.text_feature.Text",
+                                        "text": {},
+                                        "description": "Language Instruction"
                                     }
                                 }
                             }
@@ -496,12 +471,12 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
                         "features": {
                             "episode_id": {
                                 "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                "tensor": {"shape": {}, "dtype": "int32", "encoding": "none"},
+                                "tensor": {"shape": {}, "dtype": "int64", "encoding": "none"},
                                 "description": "Episode ID"
                             },
-                            "trajectory_length": {
+                             "trajectory_length": {
                                 "pythonClassName": "tensorflow_datasets.core.features.scalar.Scalar",
-                                "tensor": {"shape": {}, "dtype": "int32", "encoding": "none"},
+                                "tensor": {"shape": {}, "dtype": "int64", "encoding": "none"},
                                 "description": "Trajectory length"
                             }
                         }
@@ -510,10 +485,8 @@ def save_features_json(output_dir: Path, embedding_dim: int, action_dim: int, la
             }
         }
     }
-
     with open(output_dir / "features.json", "w") as f:
         json.dump(features_schema, f, indent=2)
-    logging.info("Saved features.json")
 
 
 def save_dataset_info_json(
@@ -586,7 +559,8 @@ def process_trajectory(
     """Process a single trajectory and compute embeddings."""
     # Extract images
     images = np.array(traj["observation"]["image_primary"])
-    if images.ndim == 5:
+    # print(f"Original image shape: {images.shape}")
+    if images.ndim == 5 or images.ndim == 6:
         images = images.squeeze(axis=1)
 
     # Get language instruction
@@ -598,8 +572,8 @@ def process_trajectory(
         if isinstance(lang_instr, bytes):
             lang_instr = lang_instr.decode("utf-8")
 
-    # Encode language
-    lang_emb = text_processor.encode([lang_instr]) #(1,16,768)
+    # Encode language - T5 returns (1, seq_len, 768), take mean over seq_len
+    # lang_emb = text_processor.encode([lang_instr]) #(1,16,768) 
 
     # Encode observations
     T = images.shape[0]
@@ -608,7 +582,7 @@ def process_trajectory(
     # Next observation embeddings (shift by 1, repeat last)
     if "next_observation" in traj and "image_primary" in traj["next_observation"]:
         next_images = np.array(traj["next_observation"]["image_primary"])
-        if next_images.ndim == 5:
+        if next_images.ndim == 5 or next_images.ndim == 6:
             next_images = next_images.squeeze(axis=1)
         next_obs_emb = encoder.encode_trajectory(next_images, lang_instr, batch_size)
     else:
@@ -640,7 +614,7 @@ def process_trajectory(
         "td_mask": td_mask,
         "mc_return": mc_return,
         "language_instruction": lang_instr,
-        "language_embedding": lang_emb,
+        # "language_embedding": lang_emb,
     }
 
 
@@ -670,6 +644,7 @@ def main(_):
         config["oxe_kwargs"]["data_dir"] = FLAGS.data_dir
     if FLAGS.data_mix:
         config["oxe_kwargs"]["data_mix"] = FLAGS.data_mix
+    config["frame_transform_kwargs"]["num_augmentations"] = FLAGS.num_augmentations
 
     logging.info(f"Data config: {config}")
 
@@ -693,6 +668,12 @@ def main(_):
     traj_transform_kwargs = dict(config.get("traj_transform_kwargs", {}))
     traj_transform_kwargs["window_size"] = 1
     frame_transform_kwargs = dict(config.get("frame_transform_kwargs", {}))
+    
+    # if "image_augment_kwargs" in frame_transform_kwargs:
+    #     logging.info("Removing image_augment_kwargs for embedding generation to prevent frozen noise.")
+    #     del frame_transform_kwargs["image_augment_kwargs"]
+        
+    # frame_transform_kwargs["image_dropout_prob"] = 0.0
 
     for dataset_idx, dataset_kwargs in enumerate(dataset_kwargs_list):
         dataset_name = dataset_kwargs.get("name", f"dataset_{dataset_idx}")
@@ -710,7 +691,7 @@ def main(_):
             continue
 
         logging.info("Counting trajectories...")
-        total_trajs = count_trajectories(dataset)
+        total_trajs = dataset.dataset_statistics.get("num_trajectories", 0)
         logging.info(f"Total trajectories: {total_trajs}")
 
         if total_trajs == 0:

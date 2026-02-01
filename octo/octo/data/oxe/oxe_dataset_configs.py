@@ -516,6 +516,28 @@ OXE_DATASET_CONFIGS = {
         "proprio_encoding": ProprioEncoding.POS_EULER,
         "action_encoding": ActionEncoding.EEF_POS,
     },
+    "bridge_dataset_embedding": {
+        "image_obs_keys": {
+            "primary": "embedding", 
+            "secondary": None, 
+            "wrist": None
+        },
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "proprio_encoding": ProprioEncoding.POS_EULER,  # 继承自 bridge_dataset
+        "action_encoding": ActionEncoding.EEF_POS,      # 继承自 bridge_dataset
+    },
+
+    # Fractal Embedding: 继承 Fractal 的 Quat/EEF 设置
+    "fractal20220817_data_embedding": {
+        "image_obs_keys": {
+            "primary": "embedding", 
+            "secondary": None, 
+            "wrist": None
+        },
+        "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+        "proprio_encoding": ProprioEncoding.POS_QUAT,   # 继承自 fractal20220817_data
+        "action_encoding": ActionEncoding.EEF_POS,      # 继承自 fractal20220817_data
+    },
 }
 
 

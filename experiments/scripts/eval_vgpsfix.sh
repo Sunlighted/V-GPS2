@@ -13,7 +13,7 @@ model_name=octo-small
 # 'google_robot_place_in_closed_bottom_drawer', 'google_robot_place_apple_in_closed_top_drawer', 'widowx_spoon_on_towel', 
 # 'widowx_carrot_on_plate', 'widowx_stack_cube', 'widowx_put_eggplant_in_basket'
 
-for task_name in google_robot_move_near google_robot_close_top_drawer # widowx_put_eggplant_in_basket widowx_spoon_on_towel widowx_carrot_on_plate widowx_stack_cube google_robot_pick_coke_can google_robot_move_near google_robot_close_top_drawer # google_robot_open_top_drawer
+for task_name in widowx_put_eggplant_in_basket widowx_spoon_on_towel widowx_carrot_on_plate widowx_stack_cube google_robot_pick_coke_can google_robot_move_near google_robot_close_top_drawer # google_robot_open_top_drawer
     do
     for seed in 0 1 2 3 4
         do
@@ -22,11 +22,11 @@ for task_name in google_robot_move_near google_robot_close_top_drawer # widowx_p
         --model_name=$model_name \
         --task_name=$task_name \
         --use_vgps=True \
-        --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_octo-small_20251121_151543/checkpoint_500000" \
+        --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/cqlfix-saen" \
         --num_samples=50 \
         --action_temp=1.0 \
         --add_actions=False \
         --num_eval_episodes=100 \
-        --pretrain_method_name="vgpsfix"
+        --pretrain_method_name="vgpsfix_sa"
     done
 done

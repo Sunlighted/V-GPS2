@@ -28,25 +28,7 @@ def get_dataset_config(window_size=1):
             subsample_length=100,
             **task_augmentation,
         ),
-        "frame_transform_kwargs": dict(
-            resize_size=(256, 256),
-            image_dropout_prob=0.0,
-            image_augment_kwargs=dict(
-                random_resized_crop=dict(scale=[0.8, 1.0], ratio=[0.9, 1.1]),
-                random_brightness=[0.2],
-                random_contrast=[0.8, 1.2],
-                random_saturation=[0.8, 1.2],
-                random_hue=[0.1],
-                augment_order=[
-                    "random_resized_crop",
-                    "random_brightness",
-                    "random_contrast",
-                    "random_saturation",
-                    "random_hue",
-                ],
-            ),
-            num_parallel_calls=200,
-        ),
+        "frame_transform_kwargs": dict(),
         "traj_transform_threads": 48,  # shared between all datasets
         "traj_read_threads": 48,  # shared between all datasets
         "shuffle_buffer_size": 100000,  # shared between all datasets
@@ -67,37 +49,12 @@ def get_config():
     config = get_dataset_config(window_size=1)
     action_dim = FieldReference(7)
 
-    primary_augment_kwargs = dict(
-        random_resized_crop=dict(scale=[0.8, 1.0], ratio=[0.9, 1.1]),
-        random_brightness=[0.1],
-        random_contrast=[0.9, 1.1],
-        random_saturation=[0.9, 1.1],
-        random_hue=[0.05],
-        augment_order=[
-            "random_resized_crop",
-            "random_brightness",
-            "random_contrast",
-            "random_saturation",
-            "random_hue",
-        ],
-    )
-   
-    del config["frame_transform_kwargs"]["resize_size"]
-    del config["frame_transform_kwargs"]["image_augment_kwargs"]
-
-    config["frame_transform_kwargs"]["resize_size"] = {
-        "primary": (256, 256),  # workspace camera is at 256x256
-    }
-    config["frame_transform_kwargs"]["image_augment_kwargs"] = {
-        "primary": primary_augment_kwargs,
-    }
-
 
     config = update_config(
         config,
         oxe_kwargs=dict(
             data_dir=placeholder(str),
-            data_mix="bridge_fractal",
+            data_mix="bridge_fractal_embedding",
             load_camera_views=("primary", ),
             load_depth=False,
             force_recompute_dataset_statistics=False,
@@ -114,11 +71,8 @@ def get_config():
             ),
             goal_relabeling_strategy=None,
         ),
-        frame_transform_kwargs=dict(
-            image_dropout_prob=0.0,
-            num_augmentations=1,
-        ),
-        batch_size=512,
+        frame_transform_kwargs=dict(),
+        batch_size=4096,
         shuffle_buffer_size=50000,
         balance_weights=True,
     )

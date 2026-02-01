@@ -53,7 +53,7 @@ class OctoEncoderModule(nn.Module):
  
         return emb
 
-class EmbeddingCQLAgent(SACAgent):
+class EmbeddingCQLSAAgent(SACAgent):
     @overrides
     def _sample_negative_goals(self, batch, rng):
         """for calql, adjust the mc_returns for negative goals"""
@@ -203,21 +203,7 @@ class EmbeddingCQLAgent(SACAgent):
             cql_q_pi = cql_q_samples[:, :, self.config["cql_n_actions"]:]
             num_vals = jnp.size(cql_q_pi)
             calql_bound_rate = jnp.sum(cql_q_pi < mc_lower_bound) / num_vals
-
-            # Use soft maximum to avoid gradient discontinuity at boundary
-            calql_soft_temp = self.config.get("calql_soft_temp", 0.0)
-            if calql_soft_temp > 0:
-                # Soft maximum: smoothly interpolates between max and logsumexp
-                # As temp -> 0, this approaches hard maximum
-                # As temp -> inf, this approaches mean
-                cql_q_pi = calql_soft_temp * jax.scipy.special.logsumexp(
-                    jnp.stack([cql_q_pi / calql_soft_temp, mc_lower_bound / calql_soft_temp], axis=0),
-                    axis=0
-                )
-            else:
-                # Original hard maximum
-                cql_q_pi = jnp.maximum(cql_q_pi, mc_lower_bound)
-
+            cql_q_pi = jnp.maximum(cql_q_pi, mc_lower_bound)
             cql_q_samples = jnp.concatenate(
                 [
                     cql_q_samples[:, :, :self.config["cql_n_actions"]],
@@ -729,51 +715,6 @@ class EmbeddingCQLAgent(SACAgent):
         }
         return metrics
 
-    # def plot_values(self, traj, seed=None, goals=None):
-    #     if goals is None:
-    #         goals = traj["goals"]
-    #     else:
-    #         traj_len = traj["observations"]["image"].shape[0]
-
-    #         if goals["language"].shape[0] > traj_len:
-    #             goals = {k: v[:traj_len] for k, v in goals.items()}
-    #         elif goals["language"].shape[0] < traj_len:
-    #             num_repeat = traj_len - goals["language"].shape[0]
-    #             for k, v in goals.items():
-    #                 rep = jnp.repeat(v[-1:], num_repeat, axis=0)
-    #                 goals[k] = jnp.concatenate([v, rep], axis=0)
-
-    #     goals = traj["goals"] if goals is None else goals
-    #     metrics = self.get_eval_values(traj, seed, goals)
-    #     visuals = traj.get("visuals", traj["observations"]["image"])
-    #     images = np.asarray(visuals).squeeze()
-
-    #     num_rows = len(metrics.keys()) + 1
-
-    #     fig, axs = plt.subplots(num_rows, 1, figsize=(8, 16))
-    #     canvas = FigureCanvas(fig)
-    #     plt.xlim(0, len(metrics["rewards"]))
-
-    #     interval = images.shape[0] // 8
-    #     interval = max(1, interval)
-    #     sel_images = images[::interval]
-    #     sel_images = np.split(sel_images, sel_images.shape[0], 0)
-    #     sel_images = [a.squeeze() for a in sel_images]
-    #     sel_images = np.concatenate(sel_images, axis=1) # (200, 8*200, 3)
-    #     axs[0].imshow(sel_images)
-        
-    #     for i, (key, metric_val) in enumerate(metrics.items()):
-    #         row = i + 1
-    #         axs[row].plot(metric_val, linestyle='--', marker='o')
-    #         axs[row].set_ylim([metric_val.min(), metric_val.max()])
-    #         axs[row].set_ylabel(key)
-    #     plt.tight_layout()
-    #     canvas.draw()  # draw the canvas, cache the renderer
-    #     out_image = np.frombuffer(canvas.tostring_rgb(), dtype='uint8')
-    #     out_image = out_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-    #     plt.close(fig)
-    #     return out_image
-    
     def plot_values(self, traj, seed=None, goals=None):
         if goals is None:
             goals = traj["goals"]
@@ -789,34 +730,31 @@ class EmbeddingCQLAgent(SACAgent):
                     goals[k] = jnp.concatenate([v, rep], axis=0)
 
         goals = traj["goals"] if goals is None else goals
-        
-        # --- 2. 获取 Metrics ---
         metrics = self.get_eval_values(traj, seed, goals)
-        
-        # --- 3. 设置绘图 (修改部分) ---
-        # 不需要 visuals 和 images 的处理逻辑了
-        
-        num_rows = len(metrics.keys()) # 去掉了 +1
-        
-        # 根据行数动态调整高度，防止太挤或太空
-        fig, axs = plt.subplots(num_rows, 1, figsize=(8, 4 * num_rows))
+        visuals = traj.get("visuals", traj["observations"]["image"])
+        images = np.asarray(visuals).squeeze()
+
+        num_rows = len(metrics.keys()) + 1
+
+        fig, axs = plt.subplots(num_rows, 1, figsize=(8, 16))
         canvas = FigureCanvas(fig)
+        plt.xlim(0, len(metrics["rewards"]))
+
+        interval = images.shape[0] // 8
+        interval = max(1, interval)
+        sel_images = images[::interval]
+        sel_images = np.split(sel_images, sel_images.shape[0], 0)
+        sel_images = [a.squeeze() for a in sel_images]
+        sel_images = np.concatenate(sel_images, axis=1) # (200, 8*200, 3)
+        axs[0].imshow(sel_images)
         
-        # 如果只有一个 metric，axs 不会是列表，将其转换为列表以便统一处理
-        if num_rows == 1:
-            axs = [axs]
-        
-        # --- 4. 绘制 Metrics ---
         for i, (key, metric_val) in enumerate(metrics.items()):
-            # 直接使用 i，不再需要 row = i + 1
-            axs[i].plot(metric_val, linestyle='--', marker='o')
-            axs[i].set_ylim([metric_val.min(), metric_val.max()])
-            axs[i].set_ylabel(key)
-            axs[i].set_xlim(0, len(metric_val)) # 确保 x 轴范围正确
-        
-        # --- 5. 输出图像 ---
+            row = i + 1
+            axs[row].plot(metric_val, linestyle='--', marker='o')
+            axs[row].set_ylim([metric_val.min(), metric_val.max()])
+            axs[row].set_ylabel(key)
         plt.tight_layout()
-        canvas.draw()
+        canvas.draw()  # draw the canvas, cache the renderer
         out_image = np.frombuffer(canvas.tostring_rgb(), dtype='uint8')
         out_image = out_image.reshape(fig.canvas.get_width_height()[::-1] + (3,))
         plt.close(fig)
@@ -1003,21 +941,20 @@ class EmbeddingCQLAgent(SACAgent):
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
         },
-        # action_encoder_kwargs: dict = {
-        #     "hidden_dims": [256],
-        #     "activate_final": True,
-        #     "use_layer_norm": False,
-        # },
-        # state_action_encoder_kwargs: dict = {
-        #     "hidden_dims": [512, 512],
-        #     "activate_final": True,
-        #     "use_layer_norm": True,
-        # },
+        action_encoder_kwargs: dict = {
+            "hidden_dims": [256],
+            "activate_final": True,
+            "use_layer_norm": False,
+        },
+        state_action_encoder_kwargs: dict = {
+            "hidden_dims": [512, 512],
+            "activate_final": True,
+            "use_layer_norm": True,
+        },
         # goals
         goals: Optional[Data] = None,
         early_goal_concat: bool = False,
         shared_goal_encoder: bool = True,
-        train_from_embeddings = None,
         **kwargs,
     ):
         # update algorithm config
@@ -1025,7 +962,7 @@ class EmbeddingCQLAgent(SACAgent):
         if config.language_conditioned:
             assert config.goal_conditioned, "Language conditioning requires goal conditioning"
             
-        if octo_model is None:
+        if config.use_precomputed_embeddings:
             encoder_def = PrecomputedFeatureEncodingWrapper(stop_gradient=True)
         else:
             encoder_def = OctoLCEncodingWrapper(
@@ -1046,12 +983,9 @@ class EmbeddingCQLAgent(SACAgent):
         critic_backbone = ensemblize(critic_backbone, config.critic_ensemble_size)(
             name="critic_ensemble"
         )
-        # critic_def = partial(
-        #     Critic_e, encoder=encoder_def, network=critic_backbone,
-        #     action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
-        # )(name="critic")
         critic_def = partial(
-            Critic, encoder=encoder_def, network=critic_backbone
+            Critic_e, encoder=encoder_def, network=critic_backbone,
+            action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
         )(name="critic")
         temperature_def = GeqLagrangeMultiplier(
             init_value=config.temperature_init,
@@ -1103,14 +1037,14 @@ class EmbeddingCQLAgent(SACAgent):
             **extra_kwargs,
         )["params"]
         
-        # # copy Octo params into RL encoder
-        # def print_keys(d, prefix=""):
-        #     for k, v in d.items():
-        #         k_clean = k.rsplit("_", 1)[0] if k.rsplit("_", 1)[-1].isdigit() else k
-        #         if isinstance(v, dict):
-        #             print_keys(v, prefix + k_clean + "/")
-        #         else:
-        #             print(prefix + k_clean)
+        # copy Octo params into RL encoder
+        def print_keys(d, prefix=""):
+            for k, v in d.items():
+                k_clean = k.rsplit("_", 1)[0] if k.rsplit("_", 1)[-1].isdigit() else k
+                if isinstance(v, dict):
+                    print_keys(v, prefix + k_clean + "/")
+                else:
+                    print(prefix + k_clean)
 
         # params_dict = flax.core.unfreeze(params['modules_actor']['encoder']['octo_encoder']['octo_module'])
         # print_keys(params_dict)
@@ -1120,29 +1054,18 @@ class EmbeddingCQLAgent(SACAgent):
         def safe_copy_params(target, source):
             for k, v in source.items():
                 if k in target:
-                    # Fix: Check for both dict and FrozenDict
-                    if isinstance(v, (dict, flax.core.FrozenDict)):
+                    if isinstance(v, dict):
                         safe_copy_params(target[k], v)
                     else:
-                        # Safety check: Ensure target is actually an array before checking shape
-                        if hasattr(target[k], 'shape'):
-                            if target[k].shape == v.shape:
-                                target[k] = v
-                            else:
-                                print(f"Shape mismatch for key {k}, skipping...")
+                        if target[k].shape == v.shape:
+                            target[k] = v
                         else:
-                            print(f"Structure mismatch: Key {k} is a leaf in source but a node in target.")
+                            print(f"Shape mismatch for key {k}, skipping...")
                 else:
                     print(f"Key {k} not in target, skipping...")
 
-        if octo_model is not None:
+        if not config.use_precomputed_embeddings:
             safe_copy_params(params['modules_actor']['encoder']['octo_encoder']['octo_module'], octo_model.params)
-        
-        if train_from_embeddings is not None:
-            if "modules_actor" in params:
-                safe_copy_params(params["modules_actor"]["network"], train_from_embeddings["modules_actor"]["network"])
-            if "modules_critic" in params:
-                safe_copy_params(params["modules_critic"]["network"], train_from_embeddings["modules_critic"]["network"])
 
         params = flax.core.freeze(params)
 

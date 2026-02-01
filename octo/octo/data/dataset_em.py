@@ -31,7 +31,7 @@ def apply_trajectory_transforms(
     window_size: int = 1,
     action_horizon: int = 1,
     subsample_length: Optional[int] = None,
-    skip_unlabeled: bool = True,
+    skip_unlabeled: bool = False,
     max_action: Optional[float] = None,
     max_proprio: Optional[float] = None,
     task_augment_strategy: Optional[str] = None,
@@ -77,6 +77,12 @@ def apply_trajectory_transforms(
             chunking.
         num_parallel_calls (int, optional): number of parallel calls for map operations. Default to AUTOTUNE.
     """
+    def safe_traj_map(ds, func, **kwargs):
+        if hasattr(ds, 'traj_map'):
+            return ds.traj_map(func, **kwargs)
+        else:
+            # 普通 Dataset 使用 standard map
+            return ds.map(func, **kwargs)
     if skip_unlabeled:
         if "language_instruction" not in dataset.element_spec["task"]:
             raise ValueError(
@@ -99,59 +105,59 @@ def apply_trajectory_transforms(
         )
 
     # marks which entires of the observation and task dicts are padding
-    dataset = dataset.traj_map(traj_transforms.add_pad_mask_dict, num_parallel_calls)
+    dataset = safe_traj_map(dataset, traj_transforms.add_pad_mask_dict, num_parallel_calls=num_parallel_calls)
 
     # optionally pads actions and proprio to a consistent number of dimensions
-    dataset = dataset.traj_map(
+    dataset = safe_traj_map(dataset, 
         partial(
             traj_transforms.pad_actions_and_proprio,
             max_action_dim=max_action_dim,
             max_proprio_dim=max_proprio_dim,
         ),
-        num_parallel_calls,
+        num_parallel_calls=num_parallel_calls,
     )
 
     # updates the "task" dict
     if goal_relabeling_strategy is not None:
-        dataset = dataset.traj_map(
+        dataset = safe_traj_map(dataset, 
             partial(
                 getattr(goal_relabeling, goal_relabeling_strategy),
                 **goal_relabeling_kwargs,
             ),
-            num_parallel_calls,
+            num_parallel_calls=num_parallel_calls,
         )
 
     # must run task augmentation before chunking, in case it changes goal timesteps
     if train and task_augment_strategy is not None:
         # perform task augmentation (e.g., dropping keys)
-        dataset = dataset.traj_map(
+        dataset = safe_traj_map(dataset, 
             partial(
                 getattr(task_augmentation, task_augment_strategy),
                 **task_augment_kwargs,
             ),
-            num_parallel_calls,
+            num_parallel_calls=num_parallel_calls,
         )
 
     # chunks observations and actions
-    dataset = dataset.traj_map(
+    dataset = safe_traj_map(dataset, 
         partial(
             traj_transforms.chunk_act_obs,
             window_size=window_size,
             action_horizon=action_horizon,
         ),
-        num_parallel_calls,
+        num_parallel_calls=num_parallel_calls,
     )
 
     if train and subsample_length is not None:
-        dataset = dataset.traj_map(
+        dataset = safe_traj_map(dataset, 
             partial(traj_transforms.subsample, subsample_length=subsample_length),
-            num_parallel_calls,
+            num_parallel_calls=num_parallel_calls,
         )
 
     for transform_spec in post_chunk_transforms:
-        dataset = dataset.traj_map(
+        dataset = safe_traj_map(dataset, 
             ModuleSpec.instantiate(transform_spec),
-            num_parallel_calls,
+            num_parallel_calls=num_parallel_calls,
         )
 
     def add_next_act_obs(traj: dict) -> dict:
@@ -164,7 +170,7 @@ def apply_trajectory_transforms(
         )
         return traj
 
-    dataset = dataset.traj_map(add_next_act_obs, num_parallel_calls)
+    dataset = safe_traj_map(dataset, add_next_act_obs, num_parallel_calls=num_parallel_calls)
 
     return dataset
 
@@ -179,7 +185,6 @@ def apply_frame_transforms(
     image_dropout_prob: float = 0.0,
     image_dropout_keep_key: Optional[str] = None,
     num_parallel_calls: int = tf.data.AUTOTUNE,
-    num_augmentations: int = 1,
 ) -> dl.DLataset:
     """Applies common transforms that happen at a frame level. These transforms are usually more
     CPU-intensive, (e.g. decoding or resizing images).
@@ -207,138 +212,7 @@ def apply_frame_transforms(
 
     # convenience wrapper that takes a function that operates on a non-chunked "observation" dict and applies
     # it to the chunked "observation" dict as well as the non-chunked "task" dict
-    def apply_obs_transform(fn: Callable[[dict], dict], frame: dict) -> dict:
-        # task is not chunked -- apply fn directly
-        frame["task"] = fn(frame["task"])
-        # observation is chunked -- apply fn along first axis
-        frame["observation"] = dl.vmap(fn)(frame["observation"])
-        frame["next_observation"] = dl.vmap(fn)(frame["next_observation"])
-        return frame
-
-    # decode + resize images (and depth images)
-    dataset = dataset.frame_map(
-        partial(
-            apply_obs_transform,
-            partial(
-                obs_transforms.decode_and_resize,
-                resize_size=resize_size,
-                depth_resize_size=depth_resize_size,
-            ),
-        ),
-        num_parallel_calls,
-    )
-
-    if train:
-        if num_augmentations > 1:
-            # === Case A: Multi-Augmentation (Output: T, N, H, W, C) ===
-            def process_trajectory_multi_aug(traj):
-                
-                # 1. Update function signature to accept key_name
-                def apply_aug_n_times(image, kwargs, key_name):
-                    # image: (H, W, C) -> (N, H, W, C)
-                    seeds = tf.random.uniform([num_augmentations, 2], maxval=tf.dtypes.int32.max, dtype=tf.int32)
-                    images_stacked = tf.repeat(image[None], num_augmentations, axis=0)
-                    
-                    def _aug_step(args):
-                        img, seed = args
-                        
-                        # === FIX START: Mock 'pad_mask_dict' ===
-                        # image_dropout requires 'pad_mask_dict' to exist.
-                        # We create a temp dict where we assume the image is valid (True).
-                        temp_obs = {
-                            key_name: img,
-                            "pad_mask_dict": {
-                                key_name: tf.ones([], dtype=tf.bool) # Scalar True
-                            }
-                        }
-
-                        # Apply Dropout
-                        temp_obs = obs_transforms.image_dropout(
-                            temp_obs, 
-                            seed=seed, 
-                            dropout_prob=image_dropout_prob, 
-                            always_keep_key=image_dropout_keep_key
-                        )
-                        
-                        # Apply Augment
-                        temp_obs = obs_transforms.augment(
-                            temp_obs, 
-                            seed=seed, 
-                            augment_kwargs=kwargs
-                        )
-
-                        # Unwrap the Tensor
-                        return temp_obs[key_name]
-                        # === FIX END ===
-
-                    return tf.vectorized_map(_aug_step, (images_stacked, seeds))
-
-                def augment_frame_n_times(frame):
-                    new_obs = {}
-                    for key, value in frame.items():
-                        # 1. Handle Images
-                        if key.startswith("image_") and hasattr(value, 'dtype') and value.dtype == tf.uint8:
-                            key_suffix = key.replace("image_", "")
-                            
-                            # Determine kwargs for this specific image
-                            if isinstance(image_augment_kwargs, dict) and key_suffix in image_augment_kwargs:
-                                current_kwargs = image_augment_kwargs[key_suffix]
-                            else:
-                                current_kwargs = image_augment_kwargs if isinstance(image_augment_kwargs, dict) else {}
-
-                            new_obs[key] = apply_aug_n_times(value, current_kwargs, key_name=key)
-                        
-                        # 2. === FIX START: Handle Nested Dictionaries (e.g., pad_mask_dict) ===
-                        elif isinstance(value, dict):
-                            new_inner = {}
-                            for k, v in value.items():
-                                # We must repeat the inner values (masks) to match the N augmentations.
-                                # v is (T, ...) -> (N, T, ...) usually, or scalar -> (N,)
-                                new_inner[k] = tf.repeat(v[None], num_augmentations, axis=0)
-                            new_obs[key] = new_inner
-                        # === FIX END ===
-
-                        # 3. Handle Tensors (Proprioception, etc.)
-                        elif hasattr(value, 'shape'):
-                            if value.shape.ndims > 0:
-                                new_obs[key] = tf.repeat(value[None], num_augmentations, axis=0)
-                            else:
-                                # For scalar tensors, you might want to repeat them to (N,) 
-                                # or keep them as is depending on your pipeline requirements.
-                                # Here we default to your original logic (keep as is):
-                                new_obs[key] = value
-                        
-                        # 4. Fallback for other types
-                        else:
-                            new_obs[key] = value
-                            
-                    return new_obs
-
-                traj["observation"] = dl.vmap(augment_frame_n_times)(traj["observation"])
-                if "next_observation" in traj:
-                    traj["next_observation"] = dl.vmap(augment_frame_n_times)(traj["next_observation"])
-                return traj
-
-            dataset = dataset.frame_map(process_trajectory_multi_aug, num_parallel_calls)
-        else:
-            # augment all images with the same seed, skipping padding images
-            def aug_and_dropout(frame: dict):
-                seed = tf.random.uniform([2], maxval=tf.dtypes.int32.max, dtype=tf.int32)
-                dropout_fn = partial(
-                    obs_transforms.image_dropout,
-                    seed=seed,
-                    dropout_prob=image_dropout_prob,
-                    always_keep_key=image_dropout_keep_key,
-                )
-                aug_fn = partial(
-                    obs_transforms.augment, seed=seed, augment_kwargs=image_augment_kwargs
-                )
-                frame = apply_obs_transform(dropout_fn, frame)
-                frame = apply_obs_transform(aug_fn, frame)
-                return frame
-
-            dataset = dataset.frame_map(aug_and_dropout, num_parallel_calls)
-
+    
     return dataset
 
 
@@ -364,6 +238,7 @@ def make_dataset_from_rlds(
     num_parallel_calls: int = tf.data.AUTOTUNE,
     discount: float = 0.98,
     num_final_repeat: int = 3,
+    embedding_dim: int = 384,
 ) -> Tuple[dl.DLataset, dict]:
     """This function is responsible for loading a specific RLDS dataset from storage and getting it into a
     standardized format. Yields a dataset of trajectories. Does not include CPU-intensive operations.
@@ -449,13 +324,13 @@ def make_dataset_from_rlds(
         new_obs = {}
         for new, old in image_obs_keys.items():
             if old is None:
-                new_obs[f"image_{new}"] = tf.repeat("", traj_len)  # padding
+                new_obs[f"image_{new}"] = tf.zeros((traj_len, embedding_dim), dtype=tf.float32)
             else:
                 new_obs[f"image_{new}"] = old_obs[old]
 
         for new, old in depth_obs_keys.items():
             if old is None:
-                new_obs[f"depth_{new}"] = tf.repeat("", traj_len)  # padding
+                new_obs[f"depth_{new}"] = tf.zeros((traj_len, embedding_dim), dtype=tf.float32)
             else:
                 new_obs[f"depth_{new}"] = old_obs[old]
 
@@ -533,7 +408,7 @@ def make_dataset_from_rlds(
         )
     dataset_statistics = tree_map(np.array, dataset_statistics)
 
-    if name=="bridge_dataset":
+    if name=="bridge_dataset_embedding":
         """
         V-GPS comment: we override and use this heuristic to normalize the action space for the bridge dataset follwoing the PTR paper (https://arxiv.org/abs/2210.05178)
         """
@@ -582,6 +457,57 @@ def make_dataset_from_rlds(
         logging.warning(
             "Dataset normalization turned off -- set skip_norm=False to apply normalization."
         )
+        
+    import tqdm
+    logging.info(f"⚡️ FORCE LOADING dataset {name} into RAM... This will take a while but will be BLAZING FAST afterwards.")
+    
+    # 1. 创建一个迭代器
+    iterator = dataset.iterator()
+    
+    # 2. 将所有数据读入 Python 列表 (这会消耗大量内存，但你有2TB，没问题)
+    #    tqdm 会显示进度条，让你知道加载了多少
+    all_trajectories = []
+    for traj in tqdm.tqdm(iterator, desc=f"Loading {name}"):
+        all_trajectories.append(traj)
+        
+    logging.info(f"✅ Loaded {len(all_trajectories)} trajectories into RAM.")
+    
+    # 3. 将 Python 列表转换回 TensorFlow Dataset
+    #    现在，数据源不再是硬盘上的 RLDS，而是内存里的 List
+    
+    # 辅助函数：将 list of dicts 转换为 dict of lists (用于 from_tensor_slices)
+    def stack_trajectories(traj_list):
+        if not traj_list:
+            return {}
+        # 获取 keys 结构
+        keys = traj_list[0].keys()
+        stacked = {}
+        for k in keys:
+            if isinstance(traj_list[0][k], dict):
+                # 递归处理嵌套字典 (例如 observation)
+                stacked[k] = stack_trajectories([t[k] for t in traj_list])
+            else:
+                # 堆叠 tensors/numpy arrays
+                # 使用 np.stack 可能会比 tf.stack 快一点，且节省显存
+                stacked[k] = [t[k] for t in traj_list] 
+        return stacked
+
+    # 注意：from_tensor_slices 对于极大量数据可能会慢，
+    # 但对于 from_generator 来说，我们直接从内存 list 读是最快的。
+    # 这里我们使用 from_generator，因为它对于 huge memory list 更友好，避免再一次内存复制
+    
+    def ram_generator():
+        for traj in all_trajectories:
+            yield traj
+            
+    # 获取 element_spec 以重建 dataset
+    element_spec = dataset.element_spec
+    
+    # 重建 Dataset (现在它是纯内存的了)
+    dataset = dl.DLataset.from_generator(
+        ram_generator,
+        output_signature=element_spec
+    )
 
     return dataset, dataset_statistics
 
@@ -609,10 +535,14 @@ def make_single_dataset(
     dataset = apply_frame_transforms(dataset, **frame_transform_kwargs, train=train)
 
     # this seems to reduce memory usage without affecting speed
-    dataset = dataset.with_ram_budget(1)
+    # dataset = dataset.with_ram_budget(1)
 
     # save for later
-    dataset.dataset_statistics = dataset_statistics
+    # dataset.dataset_statistics = dataset_statistics
+    try:
+        dataset.dataset_statistics = dataset_statistics
+    except:
+        pass
     return dataset
 
 
@@ -702,12 +632,16 @@ def make_interleaved_dataset(
             **traj_transform_kwargs,
             num_parallel_calls=threads,
             train=train,
-        ).flatten(num_parallel_calls=threads)
+        )
+        if hasattr(dataset, 'flatten'):
+            dataset = dataset.flatten(num_parallel_calls=threads)
+        else:
+            dataset = dataset.unbatch()
         datasets.append(dataset)
 
     # interleave at the frame level and then shuffle
-    dataset: dl.DLataset = dl.DLataset.sample_from_datasets(
-        datasets, sample_weights
+    dataset = tf.data.Dataset.sample_from_datasets(
+        datasets, weights=sample_weights
     ).shuffle(shuffle_buffer_size)
 
     # apply frame transforms
@@ -718,13 +652,18 @@ def make_interleaved_dataset(
         dataset = dataset.batch(batch_size)
 
     # this seems to reduce memory usage without affecting speed
-    dataset = dataset.with_ram_budget(1)
+    # dataset = dataset.with_ram_budget(1)
 
-    dataset = dataset.ignore_errors(log_warning=True)
+    # dataset = dataset.ignore_errors(log_warning=True)
 
-    # save for later
-    dataset.dataset_statistics = all_dataset_statistics
-    dataset.sample_weights = sample_weights
+    # # save for later
+    # dataset.dataset_statistics = all_dataset_statistics
+    # dataset.sample_weights = sample_weights
+    try:
+        dataset.dataset_statistics = all_dataset_statistics
+        dataset.sample_weights = sample_weights
+    except:
+        pass
 
     return dataset
 

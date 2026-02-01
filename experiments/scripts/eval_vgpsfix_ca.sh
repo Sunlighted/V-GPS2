@@ -22,7 +22,7 @@ for task_name in google_robot_move_near google_robot_close_top_drawer widowx_put
         --model_name=$model_name \
         --task_name=$task_name \
         --use_vgps=True \
-        --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/skip_unlabel_octo1" \
+        --vgps_checkpoint="/data/Chenyang/value_learning/V-GPS/save/skip_unlabel_ca" \
         --num_samples=50 \
         --action_temp=1.0 \
         --add_actions=False \

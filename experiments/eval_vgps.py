@@ -49,8 +49,14 @@ def load_vgps_checkpoint(path, wandb_run_name):
         if FLAGS.pretrain_method_name == 'vgps':
             with open("experiments/configs/pretrained_checkpoint.yaml", "r") as f:
                 config = yaml.safe_load(f)
-        if FLAGS.pretrain_method_name == 'vgpsfix_ca':
+        elif FLAGS.pretrain_method_name == 'vgpsfix_ca':
             with open("experiments/configs/pretrained_cqlfix_ca_checkpoint.yaml", "r") as f:
+                config = yaml.safe_load(f)
+        elif FLAGS.pretrain_method_name == 'vgpsfix_sa':
+            with open("experiments/configs/pretrained_cqlfix_sa_checkpoint.yaml", "r") as f:
+                config = yaml.safe_load(f)
+        elif FLAGS.pretrain_method_name == 'vgps_flow':
+            with open("experiments/configs/pretrained_checkpoint_flow.yaml", "r") as f:
                 config = yaml.safe_load(f)
         else:
             with open("experiments/configs/pretrained_cqlfix_checkpoint.yaml", "r") as f:
@@ -62,7 +68,7 @@ def load_vgps_checkpoint(path, wandb_run_name):
         config = run.config
 
     # create encoder from wandb config
-    if FLAGS.pretrain_method_name == 'vgps':
+    if FLAGS.pretrain_method_name == 'vgps' or FLAGS.pretrain_method_name == 'vgps_flow':
         encoder_def = encoders[config["encoder"]](**config["encoder_kwargs"])
     else:
         model_type = f"hf://rail-berkeley/{config['encoder']}"
@@ -71,22 +77,38 @@ def load_vgps_checkpoint(path, wandb_run_name):
     example_obs = {
         "image": np.zeros((1, 256, 256, 3), dtype=np.uint8)
     }
-    example_batch = {
-        "observations": example_obs,
-        "goals": {
-            "language": np.zeros(
-                (
-                    1,
-                    512,
+    if FLAGS.pretrain_method_name == 'vgps' or FLAGS.pretrain_method_name == 'vgps_flow':
+        example_batch = {
+            "observations": example_obs,
+            "goals": {
+                "language": np.zeros(
+                    (
+                        1,
+                        512,
+                    ),
+                    dtype=np.float32,
                 ),
-                dtype=np.float32,
-            ),
-        },
-        "actions": example_actions,
-    }
+            },
+            "actions": example_actions,
+        }
+    else:
+        example_batch = {
+            "observations": example_obs,
+            "goals": {
+                "language": np.zeros(
+                    (
+                        1,
+                        16,
+                        768,
+                    ),
+                    dtype=np.float32,
+                ),
+            },
+            "actions": example_actions,
+        }
 
     # create agent from wandb config
-    if FLAGS.pretrain_method_name == 'vgps':
+    if FLAGS.pretrain_method_name == 'vgps' or FLAGS.pretrain_method_name == 'vgps_flow':
         agent = agents[config["agent"]].create(
                 rng=jax.random.PRNGKey(0),
                 encoder_def=encoder_def,
@@ -95,7 +117,17 @@ def load_vgps_checkpoint(path, wandb_run_name):
                 actions=example_batch["actions"],
                 **config["agent_kwargs"],
         )
+    elif FLAGS.pretrain_method_name == 'vgps_from_embedding':
+        agent_from_embeddings = agents[config["agent"]].create(
+                rng=jax.random.PRNGKey(0),
+                octo_model=None,
+                observations=example_batch["observations"],
+                goals=example_batch["goals"],
+                actions=example_batch["actions"],
+                **config["agent_kwargs"],
+        )
     else:
+        print(config["agent"])
         agent = agents[config["agent"]].create(
                 rng=jax.random.PRNGKey(0),
                 octo_model=octo_model,
@@ -106,8 +138,20 @@ def load_vgps_checkpoint(path, wandb_run_name):
         )
     # load text processor
     critic_text_processor = text_processors[config["text_processor"]]()
-
-    agent = checkpoints.restore_checkpoint(path, agent)
+    
+    if FLAGS.pretrain_method_name == 'vgps_from_embedding':
+        agent_from_embeddings = checkpoints.restore_checkpoint(path, agent_from_embeddings)
+        agent = agents[config["agent"]].create(
+                rng=jax.random.PRNGKey(0),
+                octo_model=octo_model,
+                observations=example_batch["observations"],
+                goals=example_batch["goals"],
+                actions=example_batch["actions"],
+                train_from_embeddings=agent_from_embeddings.state.params,
+                **config["agent_kwargs"],
+        )
+    else:
+        agent = checkpoints.restore_checkpoint(path, agent)
 
     def get_values(observations, goals, actions):
         values = agent.get_q_values(observations, goals, actions)
@@ -235,7 +279,7 @@ def main(_):
         else:
             print(f"Success Rate: success -- {sum(successes)} / {i + 1}")
 
-        base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_octo_ac1"
+        base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_flows"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQL_bridge_fractal_b256_20251115_054407/checkpoint_500000":
             base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_vgps_both-1"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-encoder/checkpoint_500000":
@@ -250,8 +294,8 @@ def main(_):
             base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}-5"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_only-bridge_20251125_210541/checkpoint_500000":
             base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}_only-bridge-5"
-        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQLFIX_bridge_fractal_b256_only-fractal_20251121_220603/checkpoint_500000":
-            base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}_only-fractal-5"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/cqlfix-saen":
+            base_folder = f"logs/{FLAGS.model_name}_VGPSFIX_{FLAGS.use_vgps}_saen"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-saencoder/checkpoint_100000":
             base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_tine-saencoder-1"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/tine-saencoder/checkpoint_500000":
@@ -260,6 +304,8 @@ def main(_):
             base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_dyn_srd"
         if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/skip-unlabel/checkpoint_500000":
             base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_skip-unlabelled"
+        if FLAGS.vgps_checkpoint=="/data/Chenyang/value_learning/V-GPS/save/VGPS/VGPS_CalQL_Embedding_bridge_fractal_embedding_b512_20260131_182729/checkpoint_500000":
+            base_folder = f"logs/{FLAGS.model_name}_VGPS_{FLAGS.use_vgps}_from-embedding1"
 
         if FLAGS.override_instruction:
             base_folder += "_WRONG_INSTR"

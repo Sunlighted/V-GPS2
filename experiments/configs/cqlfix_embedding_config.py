@@ -17,9 +17,9 @@ def get_config():
     # Training parameters
     config.batch_size = 512
     config.num_steps = 500000
-    config.log_interval = 100
-    config.eval_interval = 5000
-    config.save_interval = 25000
+    config.log_interval = 1000
+    config.eval_interval = 20000
+    config.save_interval = 100000
     config.seed = 42
 
     # Save directory
@@ -35,6 +35,9 @@ def get_config():
     config.agent_kwargs.language_conditioned = True
     config.agent_kwargs.use_calql = True
     config.agent_kwargs.cql_alpha = 5.0
+    # Soft Cal-QL temperature: use soft maximum to avoid gradient discontinuity
+    # Set to 0 for hard maximum (original behavior), 0.5 recommended for soft boundary
+    config.agent_kwargs.calql_soft_temp = 0.0
     config.agent_kwargs.discount = 0.98
     config.agent_kwargs.target_update_rate = 0.005
     config.agent_kwargs.warmup_steps = 2000
@@ -51,16 +54,16 @@ def get_config():
     config.agent_kwargs.gc_kwargs.negative_proportion = 0.0
 
     # Network architecture - adjusted for embeddings
-    # Input embedding dim is 512 (Octo) + 768 (T5 language) = 1280
+    # Input embedding dim is 378 (Octo) with 768 (T5 language)
     config.agent_kwargs.critic_network_kwargs = ConfigDict()
-    config.agent_kwargs.critic_network_kwargs.hidden_dims = [512, 512, 256]
+    config.agent_kwargs.critic_network_kwargs.hidden_dims = [256, 256]
     config.agent_kwargs.critic_network_kwargs.activate_final = True
-    config.agent_kwargs.critic_network_kwargs.use_layer_norm = True
+    config.agent_kwargs.critic_network_kwargs.use_layer_norm = False
 
     config.agent_kwargs.policy_network_kwargs = ConfigDict()
-    config.agent_kwargs.policy_network_kwargs.hidden_dims = [512, 512, 256]
+    config.agent_kwargs.policy_network_kwargs.hidden_dims = [256, 256]
     config.agent_kwargs.policy_network_kwargs.activate_final = True
-    config.agent_kwargs.policy_network_kwargs.use_layer_norm = True
+    config.agent_kwargs.policy_network_kwargs.use_layer_norm = False
 
     # No encoder needed for pre-computed embeddings
     config.encoder = None
