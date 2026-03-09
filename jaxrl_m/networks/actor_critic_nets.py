@@ -110,7 +110,7 @@ class Critic_cross_attention(nn.Module):
         if self.encoder is None:
             obs_enc = observations
         else:
-            obs_enc = self.encoder(observations)
+            obs_enc, action_enc = self.encoder(observations)
         
         if self.state_action_encoder is not None:
             obs_enc = self.state_action_encoder(obs_enc, actions)
@@ -523,7 +523,7 @@ class Policy(nn.Module):
         if self.encoder is None:
             obs_enc = observations
         else:
-            obs_enc = self.encoder(observations)
+            _, obs_enc = self.encoder(observations)
             
         if isinstance(obs_enc, dict):
             obs_enc_values = list(obs_enc.values())

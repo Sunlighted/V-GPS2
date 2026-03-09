@@ -970,10 +970,15 @@ class EmbeddingCQLAgent(SACAgent):
                 use_proprio=False,
                 stop_gradient=True,
             )
+            
+        encoders = {
+            "actor": encoder_def,
+            "critic": encoder_def,
+        }
 
         # Define networks
         policy_def = Policy(
-            encoder=encoder_def,
+            encoder=encoders["actor"],
             network=MLP(**policy_network_kwargs),
             action_dim=actions.shape[-1],
             **policy_kwargs,
@@ -983,9 +988,12 @@ class EmbeddingCQLAgent(SACAgent):
         critic_backbone = ensemblize(critic_backbone, config.critic_ensemble_size)(
             name="critic_ensemble"
         )
+        # critic_def = partial(
+        #     Critic_e, encoder=encoder_def, network=critic_backbone,
+        #     action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
+        # )(name="critic")
         critic_def = partial(
-            Critic_e, encoder=encoder_def, network=critic_backbone,
-            action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
+            Critic, encoder=encoders["critic"], network=critic_backbone
         )(name="critic")
         temperature_def = GeqLagrangeMultiplier(
             init_value=config.temperature_init,

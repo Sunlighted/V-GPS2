@@ -247,23 +247,24 @@ class OctoLCEncodingWrapper(nn.Module):
             }
 
         # 调用 Octo encoder
-        emb = self.octo_encoder(
+        obs_emb, action_emb = self.octo_encoder(
             octo_observations,
             tasks,
             timestep_pad_mask,
             train=False,
         )  # 这里返回 (B, T, D) 或 (B, D)
 
-        if emb.ndim == 3:  # (B, T, D)
-            emb = emb.reshape(emb.shape[0], -1)  # (B, T*D)
+        if action_emb.ndim == 3:  # (B, T, D)
+            action_emb = action_emb.reshape(action_emb.shape[0], -1)  # (B, T*D)
 
         if self.use_proprio and "proprio" in observations:
-            emb = jnp.concatenate([emb, observations["proprio"]], axis=-1)
+            action_emb = jnp.concatenate([action_emb, observations["proprio"]], axis=-1)
 
         if self.stop_gradient:
-            emb = jax.lax.stop_gradient(emb)
+            action_emb = jax.lax.stop_gradient(action_emb)
+            obs_emb = jax.lax.stop_gradient(obs_emb)
 
-        return emb
+        return obs_emb, action_emb
 
 
 class PrecomputedFeatureEncodingWrapper(nn.Module):

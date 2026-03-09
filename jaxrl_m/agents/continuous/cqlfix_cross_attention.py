@@ -20,7 +20,7 @@ from jaxrl_m.common.common import JaxRLTrainState, ModuleDict, nonpytree_field
 from jaxrl_m.common.encoding import OctoLCEncodingWrapper, PrecomputedFeatureEncodingWrapper
 from jaxrl_m.common.optimizers import make_optimizer
 from jaxrl_m.common.typing import *
-from jaxrl_m.networks.actor_critic_nets import Critic, Critic_cross_attention, Policy, ensemblize
+from jaxrl_m.networks.actor_critic_nets import Critic, Critic_e, Critic_cross_attention, Policy, ensemblize
 from jaxrl_m.networks.lagrange import GeqLagrangeMultiplier, LeqLagrangeMultiplier
 from jaxrl_m.networks.mlp import MLP, Scalar
 import matplotlib
@@ -40,8 +40,14 @@ class OctoEncoderModule(nn.Module):
         transformer_outputs = self.octo_module.octo_transformer(
             observations, tasks, timestep_pad_mask, train=train, verbose=False
         )
+        
+        # Key: task_language, Tokens Shape: (256, 16, 384)
+        # Key: obs_primary, Tokens Shape: (256, 1, 256, 384)
+        # Key: readout_action, Tokens Shape: (256, 1, 1, 384)
+        # Key: task, Tokens Shape: (256, 16, 384)
+        # Key: obs, Tokens Shape: (256, 1, 256, 384)
 
-        tg = transformer_outputs[f"readout_{self.readout_name}"]
+        tg = transformer_outputs[f"obs"]
         # tg.tokens: (batch, horizon, n_readout_tokens, dim)
 
         # if self.pool_type == "mean":
@@ -51,69 +57,48 @@ class OctoEncoderModule(nn.Module):
         #     emb = emb.mean(axis=-2) # (B, D)
         # else:
         #     raise ValueError(f"Unknown pool_type: {self.pool_type}")
-        emb = tg.tokens
- 
-        return emb
-    
+        obs_token = tg.tokens
+        action_token = transformer_outputs[f"readout_{self.readout_name}"].tokens.mean(axis=-2)
+
+        return obs_token, action_token
+
 class CrossAttentionModule(nn.Module):
     num_heads: int = 8
     
     @nn.compact
-    def __call__(self, readout_embeddings, actions, train: bool = True):
+    def __call__(self, obs_tokens, actions, train: bool = True):
         """
-        readout_embeddings: 来自 Octo Transformer 的输出 [Batch, Window, N_Tokens, Embed_Dim]
+        obs_tokens: 来自 Octo Transformer 的输出 [Batch, Window, N_Tokens, Embed_Dim]
         actions: 当前动作 [Batch, Window, Action_Dim] (如果是 Chunked Action)
                  或者是 [Batch, Action_Dim]
         """
-        
-        embedding_dim = readout_embeddings.shape[-1]
-        kv_input = rearrange(readout_embeddings, 'b w n d -> (b w) n d')
+        if obs_tokens.ndim == 4:
+             obs_tokens = obs_tokens[:, -1, :, :]
+        embedding_dim = obs_tokens.shape[-1]
         
         # 1. 投影 Action 到 Embedding 维度
         # 假设 actions 是 [Batch, Window, Action_Dim]
         # 如果 actions 只有 [Batch, Action_Dim]，需要 expand 维度对齐
-        action_emb = nn.Dense(embedding_dim, name="action_proj")(actions)
-        
-        # 2. 构造 Query, Key, Value
-        # Query = Action (我想知道这个动作在当前环境下的价值)
-        # Key/Value = Readout Embeddings (环境的压缩特征)
-        
-        # 注意维度：我们需要让 Action 对 Readout Tokens 做 Attention
-        # 假设我们只关心当前时间步 (Window 的最后一帧)
-        # 或者我们对整个 Window 做处理
-        
-        # 这里演示针对 Window 中每个时间步的处理:
-        # action_emb: [B, W, A_Horizon, D] -> 这里的维度取决于你的 Action 形状
-        # 如果只是评估单个动作 a_t 在 s_t:
-        # action_emb: [B, W, 1, D]
-        
-        # 为了方便计算 Cross Attention，我们将 Readout Tokens 视为序列长度
-        # Key/Value Shape: [B, W, N_Tokens, D]
-        
-        # 我们使用 MultiHeadAttention
-        # Inputs_q (Action): [B, W, 1, D]
-        # Inputs_kv (State): [B, W, N_Tokens, D]
-        # 注意：Flax 的 Attention 默认处理 [Batch, Seq, Dim]，这里有 Window 维度，可能需要 merge 或者 scan
-        q_input = action_emb[:, None, :]
-        
-        # 简单起见，这里假设我们把 Window 和 Batch 合并处理，或者只取最后一个时间步
-        
-        q_input = nn.LayerNorm()(q_input) 
-        kv_input = nn.LayerNorm()(kv_input)
-        
+        action_query = nn.Dense(embedding_dim, name="action_proj")(actions)
+        action_query = jnp.expand_dims(action_query, axis=1) # 增加 Sequence 维度
+        action_query = nn.LayerNorm()(action_query)
+
+        kv = obs_tokens
+        kv = nn.LayerNorm()(kv)
+
         # Cross Attention: Action 关注 State
-        fused_features = nn.MultiHeadDotProductAttention(
+        attn_out = nn.MultiHeadDotProductAttention(
             num_heads=self.num_heads,
-            dropout_rate=0.0
-        )(inputs_q=q_input, inputs_kv=kv_input, deterministic=True) # fused_features: [B, W, 1, D]
+            kernel_init=nn.initializers.xavier_uniform(),
+            deterministic=True,
+            dropout_rate=0.0,
+            name="cross_attn"
+        )(inputs_q=action_query, inputs_kv=kv)
         
-        fused_features = fused_features + q_input
+        x = action_query + attn_out
+        x = nn.LayerNorm()(x)
         
-        fused_features = nn.LayerNorm(name="output_ln")(fused_features)
-         
-        fused_features = fused_features.squeeze(1) # [(B*W), 384]         
-        
-        return fused_features
+        return x.squeeze(1)
 
 class EmbeddingCQLAgent(SACAgent):
     @overrides
@@ -431,110 +416,112 @@ class EmbeddingCQLAgent(SACAgent):
 
     @overrides
     def loss_fns(self, batch):
-        # losses = super().loss_fns(batch)
-        # if self.config["cql_autotune_alpha"]:
-        #     losses["cql_alpha_lagrange"] = partial(self.cql_alpha_loss_fn, batch)config.critic_loss_weight = 1.0
-        critic_weight = self.config.get("critic_loss_weight", 1.0)
-        actor_weight = self.config.get("actor_loss_weight", 1.0 / 3.0)
-        temp_weight = self.config.get("temp_loss_weight", 1.0)
-        
-        def combined_loss_fn(params, rng):
-            rng, actor_rng, critic_rng, temp_rng = jax.random.split(rng, 4)
-
-            critic_loss, critic_info = self.critic_loss_fn(batch, params, critic_rng)
-            actor_loss, actor_info = self.policy_loss_fn(batch, params, actor_rng)
-            temp_loss, temp_info = self.temperature_loss_fn(batch, params, temp_rng)
-
-            total_loss = (
-                critic_weight * critic_loss +
-                actor_weight * actor_loss +
-                temp_weight * temp_loss
-            )
-
-            combined_info = {**critic_info, **actor_info, **temp_info}
-            combined_info["total_loss"] = total_loss
-            combined_info["weighted_critic_loss"] = critic_weight * critic_loss
-            combined_info["weighted_actor_loss"] = actor_weight * actor_loss
+        losses = super().loss_fns(batch)
+        if self.config["cql_autotune_alpha"]:
+            losses["cql_alpha_lagrange"] = partial(self.cql_alpha_loss_fn, batch)
             
-            return total_loss, combined_info
-
-        return {
-            "combined": combined_loss_fn
-        }
-
-    # def update(
-    #     self,
-    #     batch: Batch,
-    #     pmap_axis: str = None,
-    #     networks_to_update: set = set({"actor", "critic"}),
-    # ):
-    #     """update super() to perhaps include updating CQL lagrange multiplier"""
-    #     if self.config["autotune_entropy"]:
-    #         networks_to_update.add("temperature")
-    #     if self.config["cql_autotune_alpha"]:
-    #         networks_to_update.add("cql_alpha_lagrange")
-
-    #     return super().update(
-    #         batch, pmap_axis=pmap_axis, networks_to_update=frozenset(networks_to_update)
-    #     )
+        return losses
+        # critic_weight = self.config.get("critic_loss_weight", 1.0)
+        # actor_weight = self.config.get("actor_loss_weight", 1.0 / 3.0)
+        # temp_weight = self.config.get("temp_loss_weight", 1.0)
         
-    @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
+        # def combined_loss_fn(params, rng):
+        #     rng, actor_rng, critic_rng, temp_rng = jax.random.split(rng, 4)
+
+        #     critic_loss, critic_info = self.critic_loss_fn(batch, params, critic_rng)
+        #     actor_loss, actor_info = self.policy_loss_fn(batch, params, actor_rng)
+        #     temp_loss, temp_info = self.temperature_loss_fn(batch, params, temp_rng)
+
+        #     total_loss = (
+        #         critic_weight * critic_loss +
+        #         actor_weight * actor_loss +
+        #         temp_weight * temp_loss
+        #     )
+
+        #     combined_info = {**critic_info, **actor_info, **temp_info}
+        #     combined_info["total_loss"] = total_loss
+        #     combined_info["weighted_critic_loss"] = critic_weight * critic_loss
+        #     combined_info["weighted_actor_loss"] = actor_weight * actor_loss
+            
+        #     return total_loss, combined_info
+
+        # return {
+        #     "combined": combined_loss_fn
+        # }
+
     def update(
         self,
         batch: Batch,
-        *,
         pmap_axis: str = None,
-        networks_to_update: frozenset[str] = frozenset(
-            {"actor", "critic", "temperature"}
-        ),
-    ) -> Tuple["SACAgent", dict]:
-        """
-        Take one gradient step on all (or a subset) of the networks in the agent.
+        networks_to_update: set = set({"actor", "critic"}),
+    ):
+        """update super() to perhaps include updating CQL lagrange multiplier"""
+        if self.config["autotune_entropy"]:
+            networks_to_update.add("temperature")
+        if self.config["cql_autotune_alpha"]:
+            networks_to_update.add("cql_alpha_lagrange")
 
-        Parameters:
-            batch: Batch of data to use for the update. Should have keys:
-                "observations", "actions", "next_observations", "rewards", "masks".
-            pmap_axis: Axis to use for pmap (if None, no pmap is used).
-            networks_to_update: Names of networks to update (default: all networks).
-                For example, in high-UTD settings it's common to update the critic
-                many times and only update the actor (and other networks) once.
-        Returns:
-            Tuple of (new agent, info dict).
-        """
-        batch_size = batch["rewards"].shape[0]
-        chex.assert_tree_shape_prefix(batch, (batch_size,))
-
-        rng, goal_rng = jax.random.split(self.state.rng)
-        if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
-            new_stats, _neg_goal_masks = self._sample_negative_goals(batch, goal_rng)
-            # save the new goals and rewards
-            for k, v in new_stats.items():
-                batch[k] = v
-
-        # Compute gradients and update params
-        loss_fns = self.loss_fns(batch)
-
-        # Only compute gradients for specified steps
-        new_state, info = self.state.apply_loss_fns(
-            loss_fns, pmap_axis=pmap_axis, has_aux=True
+        return super().update(
+            batch, pmap_axis=pmap_axis, networks_to_update=frozenset(networks_to_update)
         )
+        
+    # @partial(jax.jit, static_argnames=("pmap_axis", "networks_to_update"))
+    # def update(
+    #     self,
+    #     batch: Batch,
+    #     *,
+    #     pmap_axis: str = None,
+    #     networks_to_update: frozenset[str] = frozenset(
+    #         {"actor", "critic", "temperature"}
+    #     ),
+    # ) -> Tuple["SACAgent", dict]:
+    #     """
+    #     Take one gradient step on all (or a subset) of the networks in the agent.
 
-        # Update target network (if requested)
-        if "critic" in networks_to_update:
-            new_state = new_state.target_update(self.config["soft_target_update_rate"])
+    #     Parameters:
+    #         batch: Batch of data to use for the update. Should have keys:
+    #             "observations", "actions", "next_observations", "rewards", "masks".
+    #         pmap_axis: Axis to use for pmap (if None, no pmap is used).
+    #         networks_to_update: Names of networks to update (default: all networks).
+    #             For example, in high-UTD settings it's common to update the critic
+    #             many times and only update the actor (and other networks) once.
+    #     Returns:
+    #         Tuple of (new agent, info dict).
+    #     """
+    #     batch_size = batch["rewards"].shape[0]
+    #     chex.assert_tree_shape_prefix(batch, (batch_size,))
 
-        # Update RNG
-        new_state = new_state.replace(rng=rng)
+    #     rng, goal_rng = jax.random.split(self.state.rng)
+    #     if self.config["goal_conditioned"] and self.config["gc_kwargs"]["negative_proportion"] > 0:
+    #         new_stats, _neg_goal_masks = self._sample_negative_goals(batch, goal_rng)
+    #         # save the new goals and rewards
+    #         for k, v in new_stats.items():
+    #             batch[k] = v
 
-        # Log learning rates
-        for name, opt_state in new_state.opt_states.items():
-            if (
-                hasattr(opt_state, "hyperparams")
-                and "learning_rate" in opt_state.hyperparams.keys()
-            ):
-                info[f"{name}_lr"] = opt_state.hyperparams["learning_rate"]
+    #     # Compute gradients and update params
+    #     loss_fns = self.loss_fns(batch)
 
-        return self.replace(state=new_state), info
+    #     # Only compute gradients for specified steps
+    #     new_state, info = self.state.apply_loss_fns(
+    #         loss_fns, pmap_axis=pmap_axis, has_aux=True
+    #     )
+
+    #     # Update target network (if requested)
+    #     if "critic" in networks_to_update:
+    #         new_state = new_state.target_update(self.config["soft_target_update_rate"])
+
+    #     # Update RNG
+    #     new_state = new_state.replace(rng=rng)
+
+    #     # Log learning rates
+    #     for name, opt_state in new_state.opt_states.items():
+    #         if (
+    #             hasattr(opt_state, "hyperparams")
+    #             and "learning_rate" in opt_state.hyperparams.keys()
+    #         ):
+    #             info[f"{name}_lr"] = opt_state.hyperparams["learning_rate"]
+
+    #     return self.replace(state=new_state), info
 
     def update_cql_alpha(self, new_alpha):
         """update the CQL alpha. Used for finetuning online with a different alpha"""
@@ -1086,6 +1073,16 @@ class EmbeddingCQLAgent(SACAgent):
             "tanh_squash_distribution": True,
             "std_parameterization": "exp",
         },
+        action_encoder_kwargs: dict = {
+            "hidden_dims": [256],
+            "activate_final": True,
+            "use_layer_norm": False,
+        },
+        state_action_encoder_kwargs: dict = {
+            "hidden_dims": [512, 512],
+            "activate_final": True,
+            "use_layer_norm": True,
+        },
         # goals
         goals: Optional[Data] = None,
         early_goal_concat: bool = False,
@@ -1122,6 +1119,10 @@ class EmbeddingCQLAgent(SACAgent):
             Critic_cross_attention, encoder=encoder_def, network=critic_backbone,
             state_action_encoder=CrossAttentionModule()
         )(name="critic")
+        # critic_def = partial(
+        #     Critic_e, encoder=encoder_def, network=critic_backbone,
+        #     action_encoder=MLP(**action_encoder_kwargs), state_action_encoder=MLP(**state_action_encoder_kwargs)
+        # )(name="critic")
         temperature_def = GeqLagrangeMultiplier(
             init_value=config.temperature_init,
             constraint_shape=(),
@@ -1145,16 +1146,16 @@ class EmbeddingCQLAgent(SACAgent):
         model_def = ModuleDict(networks)
 
         # Define optimizers
-        # txs = {
-        #     "actor": make_optimizer(**config.actor_optimizer_kwargs),
-        #     "critic": make_optimizer(**config.critic_optimizer_kwargs),
-        #     "temperature": make_optimizer(**config.temperature_optimizer_kwargs),
-        # }
-        # if config["cql_autotune_alpha"]:
-        #     txs["cql_alpha_lagrange"] = make_optimizer(
-        #         **config.cql_alpha_lagrange_otpimizer_kwargs
-        #     )
-        txs = {"combined": make_optimizer(**config.optimizer_kwargs)}
+        txs = {
+            "actor": make_optimizer(**config.actor_optimizer_kwargs),
+            "critic": make_optimizer(**config.critic_optimizer_kwargs),
+            "temperature": make_optimizer(**config.temperature_optimizer_kwargs),
+        }
+        if config["cql_autotune_alpha"]:
+            txs["cql_alpha_lagrange"] = make_optimizer(
+                **config.cql_alpha_lagrange_otpimizer_kwargs
+            )
+        # txs = {"combined": make_optimizer(**config.optimizer_kwargs)}
 
         # init params
         rng, init_rng = jax.random.split(rng)
@@ -1237,29 +1238,29 @@ def get_default_config(updates=None):
     config.critic_subsample_size = None
     config.autotune_entropy = True
     config.temperature_init = 1.0
-    # config.actor_optimizer_kwargs = ConfigDict(
-    #     {
-    #         "learning_rate": 1e-4,
-    #         "warmup_steps": 2000,
-    #     }
-    # )
-    # config.critic_optimizer_kwargs = ConfigDict(
-    #     {
-    #         "learning_rate": 3e-4,
-    #         "warmup_steps": 2000,
-    #     }
-    # )
-    # config.temperature_optimizer_kwargs = ConfigDict(
-    #     {
-    #         "learning_rate": 3e-4,
-    #     }
-    # )
-    config.temperature_optimizer_kwargs = ConfigDict(
+    config.actor_optimizer_kwargs = ConfigDict(
+        {
+            "learning_rate": 1e-4,
+            "warmup_steps": 2000,
+        }
+    )
+    config.critic_optimizer_kwargs = ConfigDict(
         {
             "learning_rate": 3e-4,
             "warmup_steps": 2000,
         }
     )
+    config.temperature_optimizer_kwargs = ConfigDict(
+        {
+            "learning_rate": 3e-4,
+        }
+    )
+    # config.optimizer_kwargs = ConfigDict(
+    #     {
+    #         "learning_rate": 3e-4,
+    #         "warmup_steps": 2000,
+    #     }
+    # )
     
     config.critic_loss_weight = 1.0
     config.actor_loss_weight = 1.0 / 3.0  # ~0.333 to match actor's lower LR
